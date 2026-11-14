@@ -50,39 +50,43 @@
 static void studio_prefill_credentials(HWND hDlg, const char* server)
 {
 	WCHAR target[512] = WINPR_C_ARRAY_INIT;
-	WCHAR* userW = nullptr;
-	WCHAR* passW = nullptr;
-	CREDENTIALW* cred = nullptr;
+	CREDENTIALW* generic = nullptr;
+	CREDENTIALW* domain = nullptr;
+	const WCHAR* user = nullptr;
 
 	if (!server || !server[0])
 		return;
 
+	/* 通用条目里保存密码，域条目只有账号名，两者都取一次。 */
 	(void)swprintf_s(target, ARRAYSIZE(target), L"TERMSRV/%S", server);
+	(void)CredReadW(target, CRED_TYPE_GENERIC, 0, &generic);
+	(void)CredReadW(target, CRED_TYPE_DOMAIN_PASSWORD, 0, &domain);
 
-	if (!CredReadW(target, CRED_TYPE_DOMAIN_PASSWORD, 0, &cred) &&
-	    !CredReadW(target, CRED_TYPE_GENERIC, 0, &cred))
-		return;
+	if (generic && generic->UserName && generic->UserName[0])
+		user = generic->UserName;
+	else if (domain && domain->UserName && domain->UserName[0])
+		user = domain->UserName;
 
-	if (cred)
+	if (user)
+		SetDlgItemTextW(hDlg, IDC_STUDIO_USER, user);
+
+	if (generic && generic->CredentialBlob && (generic->CredentialBlobSize >= sizeof(WCHAR)))
 	{
-		if (cred->UserName && cred->UserName[0])
-			SetDlgItemTextW(hDlg, IDC_STUDIO_USER, cred->UserName);
-
-		if (cred->CredentialBlob && cred->CredentialBlobSize > 0)
+		const size_t chars = generic->CredentialBlobSize / sizeof(WCHAR);
+		WCHAR* passW = calloc(chars + 1, sizeof(WCHAR));
+		if (passW)
 		{
-			const size_t chars = cred->CredentialBlobSize / sizeof(WCHAR);
-			passW = calloc(chars + 1, sizeof(WCHAR));
-			if (passW)
-			{
-				memcpy(passW, cred->CredentialBlob, cred->CredentialBlobSize);
-				SetDlgItemTextW(hDlg, IDC_STUDIO_PASSWORD, passW);
-				SecureZeroMemory(passW, (chars + 1) * sizeof(WCHAR));
-				free(passW);
-			}
+			memcpy(passW, generic->CredentialBlob, generic->CredentialBlobSize);
+			SetDlgItemTextW(hDlg, IDC_STUDIO_PASSWORD, passW);
+			SecureZeroMemory(passW, (chars + 1) * sizeof(WCHAR));
+			free(passW);
 		}
-		CredFree(cred);
 	}
-	(void)userW;
+
+	if (generic)
+		CredFree(generic);
+	if (domain)
+		CredFree(domain);
 }
 
 static void studio_history_path(char* path, size_t len)
