@@ -224,6 +224,9 @@ static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, 
 					EndDialog(hDlg, IDOK);
 					return TRUE;
 				}
+				case IDC_STUDIO_HELP:
+					MessageBoxA(hDlg, "输入要连接的计算机名称（可带端口），再填写可选凭据。地址历史会自动记录。", "远程桌面连接", MB_OK | MB_ICONINFORMATION);
+					return TRUE;
 				case IDCANCEL:
 					EndDialog(hDlg, IDCANCEL);
 					return TRUE;
