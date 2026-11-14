@@ -7,15 +7,21 @@
 
 ## 启动
 
+双击 **`远程桌面 192.168.98.184.lnk`**（端口已内置），或直接运行 exe：
+
 ```powershell
-.\Start-FreeRdp.ps1 -Server 192.168.98.184          # 默认端口 3389
-.\Start-FreeRdp.ps1 -Server 192.168.98.184 -Port 3390 -Username Verisilicon\cn1842
-.\Start-FreeRdp.ps1 -Server 192.168.98.184 -ScaleDesktop 150   # 手动指定会话缩放
+.\StudioRdp.exe                          # 默认 192.168.98.184:3389
+.\StudioRdp.exe 10.10.24.5               # 指定服务器
+.\StudioRdp.exe 10.10.24.5:3390          # 指定端口
+.\StudioRdp.exe 10.10.24.5 --user Verisilicon\cn1842
+.\StudioRdp.exe 10.10.24.5 --scale 150   # 手动指定会话缩放
 ```
+
+`StudioRdp.exe` 是成品启动器（无脚本依赖）：负责拉起 FreeRDP 原生客户端、在 activation 超时时自动重试（默认 3 次）、
+把客户端输出写到 `client.stderr.log`，并在会话期间后台驻留。失败时弹窗给出日志末尾几行。
 
 - 凭据：首次登录勾选“保存密码”后写入 Windows 凭据管理器，键名 `TERMSRV/<host>` 或 `TERMSRV/<host>:<port>`，下次自动读取。
 - 证书：`/cert:ignore` 直连，不再弹证书窗口（仅建议在可信内网使用）。
-- 偶发的 `ACTIVATION_TIMEOUT`（上一会话尚未释放）会自动重试，默认最多 3 次。
 
 ## 全屏与多显示器
 
