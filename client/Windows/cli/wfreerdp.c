@@ -228,6 +228,47 @@ static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, 
 				}
 			}
 			return FALSE;
+		case WM_ERASEBKGND:
+		{
+			/* 头部白底横幅 + 分隔线，模拟 mstsc 的窗口头部。 */
+			HDC dc = (HDC)wParam;
+			RECT rc;
+			RGBQUAD top;
+			RGBQUAD bottom;
+			RECT band;
+
+			GetClientRect(hDlg, &rc);
+			FillRect(dc, &rc, (HBRUSH)(COLOR_BTNFACE + 1));
+
+			band = rc;
+			band.bottom = (rc.bottom * 42) / 100;
+			{
+				HBRUSH white = CreateSolidBrush(RGB(255, 255, 255));
+				HBRUSH tint = CreateSolidBrush(RGB(243, 247, 252));
+				RECT lower = band;
+
+				lower.top = band.top + ((band.bottom - band.top) * 55) / 100;
+				FillRect(dc, &band, white);
+				FillRect(dc, &lower, tint);
+				DeleteObject(white);
+				DeleteObject(tint);
+			}
+
+			{
+				RECT line = band;
+				HBRUSH brush = CreateSolidBrush(RGB(197, 205, 216));
+				line.top = band.bottom;
+				line.bottom = band.bottom + 1;
+				FillRect(dc, &line, brush);
+				DeleteObject(brush);
+			}
+			return TRUE;
+		}
+
+		case WM_CTLCOLORSTATIC:
+			SetBkMode((HDC)wParam, TRANSPARENT);
+			return (LRESULT)GetStockObject(NULL_BRUSH);
+
 		case WM_COMMAND:
 			switch (LOWORD(wParam))
 			{
