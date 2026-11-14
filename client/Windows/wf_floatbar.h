@@ -30,5 +30,7 @@ void wf_floatbar_free(wfFloatBar* floatbar);
 
 BOOL wf_floatbar_toggle_fullscreen(wfFloatBar* floatbar, BOOL fullscreen);
 BOOL wf_floatbar_reset_position(wfFloatBar* floatbar);
+/* Resize the bar (and its controls) to a new session scale and centre it again. */
+BOOL wf_floatbar_set_scale(wfFloatBar* floatbar, UINT32 zoom);
 
 #endif /* FREERDP_CLIENT_WIN_FLOATBAR_H */

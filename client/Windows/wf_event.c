@@ -36,6 +36,8 @@
 
 #include <windowsx.h>
 
+#include "studio_input.h"
+
 static HWND g_focus_hWnd = nullptr;
 static HWND g_main_hWnd = nullptr;
 static HWND g_parent_hWnd = nullptr;
@@ -351,16 +353,27 @@ static void wf_sizing(wfContext* wfc, WPARAM wParam, LPARAM lParam)
 	}
 }
 
-static void wf_send_resize(wfContext* wfc)
+void wf_send_resize(wfContext* wfc)
 {
 	RECT windowRect;
 	int targetWidth = wfc->client_width;
 	int targetHeight = wfc->client_height;
 	rdpSettings* settings = wfc->common.context.settings;
 
+	if (!wfc->hwnd)
+		return;
+
 	if (freerdp_settings_get_bool(settings, FreeRDP_DynamicResolutionUpdate) &&
-	    wfc->disp != nullptr)
+	    wfc->disp != nullptr &&
+	    !freerdp_settings_get_bool(settings, FreeRDP_UseMultimon))
 	{
+		if (freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor) !=
+		    wfc->studioSentScale)
+			WLog_WARN("com.freerdp.client.windows",
+			          "wf_send_resize: target=%dx%d scale=%" PRIu32 " sent=%" PRIu32,
+			          targetWidth, targetHeight,
+			          freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor),
+			          wfc->studioSentScale);
 		if (GetTickCount64() - wfc->lastSentDate > RESIZE_MIN_DELAY)
 		{
 			if (wfc->fullscreen)
@@ -369,8 +382,11 @@ static void wf_send_resize(wfContext* wfc)
 				targetWidth = windowRect.right - windowRect.left;
 				targetHeight = windowRect.bottom - windowRect.top;
 			}
+			const UINT32 scale =
+			    freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor);
 			if (freerdp_settings_get_uint32(settings, FreeRDP_SmartSizingWidth) != targetWidth ||
-			    freerdp_settings_get_uint32(settings, FreeRDP_SmartSizingHeight) != targetHeight)
+			    freerdp_settings_get_uint32(settings, FreeRDP_SmartSizingHeight) != targetHeight ||
+			    wfc->studioSentScale != scale)
 			{
 				DISPLAY_CONTROL_MONITOR_LAYOUT layout = WINPR_C_ARRAY_INIT;
 
@@ -380,8 +396,7 @@ static void wf_send_resize(wfContext* wfc)
 				layout.Height = targetHeight;
 				layout.Orientation =
 				    freerdp_settings_get_uint16(settings, FreeRDP_DesktopOrientation);
-				layout.DesktopScaleFactor =
-				    freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor);
+				layout.DesktopScaleFactor = scale;
 				layout.DeviceScaleFactor =
 				    freerdp_settings_get_uint32(settings, FreeRDP_DeviceScaleFactor);
 				layout.PhysicalWidth = targetWidth;
@@ -392,12 +407,61 @@ static void wf_send_resize(wfContext* wfc)
 				{
 					WLog_ERR("", "SendMonitorLayout failed.");
 				}
+				else
+				{
+					WLog_WARN("com.freerdp.client.windows",
+					          "session scale changed %" PRIu32 " -> %" PRIu32,
+					          wfc->studioSentScale, scale);
+					wfc->studioSentScale = scale;
+				}
 				(void)freerdp_settings_set_uint32(settings, FreeRDP_SmartSizingWidth, targetWidth);
 				(void)freerdp_settings_set_uint32(settings, FreeRDP_SmartSizingHeight,
 				                                  targetHeight);
 			}
 			wfc->lastSentDate = GetTickCount64();
 		}
+	}
+}
+
+/* Any input, local or injected, restarts the idle countdown. */
+static void studio_keepalive_touch(wfContext* wfc)
+{
+	if (!wfc || !wfc->hwnd)
+		return;
+
+	SetTimer(wfc->hwnd, STUDIO_KEEPALIVE_TIMER, STUDIO_KEEPALIVE_IDLE_MS, nullptr);
+}
+
+static BOOL studio_keepalive_is_input(UINT msg)
+{
+	switch (msg)
+	{
+		case WM_KEYDOWN:
+		case WM_KEYUP:
+		case WM_SYSKEYDOWN:
+		case WM_SYSKEYUP:
+		case WM_CHAR:
+		case WM_SYSCHAR:
+		case WM_UNICHAR:
+		case WM_INPUT:
+		case WM_MOUSEMOVE:
+		case WM_MOUSEWHEEL:
+		case WM_MOUSEHWHEEL:
+		case WM_LBUTTONDOWN:
+		case WM_LBUTTONUP:
+		case WM_LBUTTONDBLCLK:
+		case WM_MBUTTONDOWN:
+		case WM_MBUTTONUP:
+		case WM_MBUTTONDBLCLK:
+		case WM_RBUTTONDOWN:
+		case WM_RBUTTONUP:
+		case WM_RBUTTONDBLCLK:
+		case WM_XBUTTONDOWN:
+		case WM_XBUTTONUP:
+		case WM_XBUTTONDBLCLK:
+			return TRUE;
+		default:
+			return FALSE;
 	}
 }
 
@@ -417,6 +481,38 @@ LRESULT CALLBACK wf_event_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam
 	{
 		rdpInput* input = wfc->common.context.input;
 		rdpSettings* settings = wfc->common.context.settings;
+
+		if (Msg == WM_COPYDATA)
+		{
+			const COPYDATASTRUCT* message = (const COPYDATASTRUCT*)lParam;
+			if (message && message->dwData == 0x46524433)
+				return (LRESULT)(1000 + wfc->studioKeepAliveCount);
+			const LRESULT sent = studio_send_input(&wfc->common.context, message);
+			if (sent == 1)
+				studio_keepalive_touch(wfc);
+			return sent;
+		}
+		if (Msg == WM_TIMER && wParam == STUDIO_SYNC_TIMER)
+		{
+			KillTimer(wfc->hwnd, STUDIO_SYNC_TIMER);
+			wf_send_resize(wfc);
+			return 0;
+		}
+		if (Msg == WM_TIMER && wParam == STUDIO_KEEPALIVE_TIMER)
+		{
+			const UINT32 keys[] = { 0x66, 0x80000066 };
+			const COPYDATASTRUCT message = { 0x46524432, sizeof(keys), (PVOID)keys };
+			const LRESULT sent = studio_send_input(&wfc->common.context, &message);
+			if (sent == 1)
+				wfc->studioKeepAliveCount++;
+			WLog_WARN("com.freerdp.client.windows",
+			          "idle keep alive fired: result=%" PRIi64 " sent=%" PRIu64, (INT64)sent,
+			          wfc->studioKeepAliveCount);
+			return 0;
+		}
+
+		if (studio_keepalive_is_input(Msg))
+			studio_keepalive_touch(wfc);
 
 		if (!g_parent_hWnd && wfc->hWndParent)
 			g_parent_hWnd = wfc->hWndParent;
@@ -509,6 +605,10 @@ LRESULT CALLBACK wf_event_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam
 					{
 						g_focus_hWnd = nullptr;
 					}
+
+					/* Keep the connection bar sized and centred after any resize. */
+					if (wfc->floatbar)
+						(void)wf_floatbar_reset_position(wfc->floatbar);
 				}
 
 				break;
@@ -516,6 +616,14 @@ LRESULT CALLBACK wf_event_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam
 			case WM_EXITSIZEMOVE:
 				wf_size_scrollbars(wfc, wfc->client_width, wfc->client_height);
 				wf_send_resize(wfc);
+				break;
+
+			case WM_DPICHANGED:
+				/* The window landed on a display with another scale: re-bind the session there.
+				 * wf_snap_to_monitor reconnects when the scale differs, which is the only way
+				 * Windows re-applies a session scale factor. */
+				wf_snap_to_monitor(wfc);
+				processed = FALSE;
 				break;
 
 			case WM_ERASEBKGND:

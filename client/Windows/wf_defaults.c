@@ -38,7 +38,9 @@ static PCWSTR ValidateString(const BYTE* pb, ULONG cb)
 static void AddDefaultSettings_I(rdpSettings* settings, size_t idHostname, size_t idUsername,
                                  size_t idDomain, size_t idPassword)
 {
-	static const PSTR TERMSRV = "TERMSRV/%s";
+	const UINT32 port = idHostname == FreeRDP_ServerHostname ?
+	                    freerdp_settings_get_uint32(settings, FreeRDP_ServerPort) : 3389;
+	const char* TERMSRV = port == 3389 ? "TERMSRV/%s" : "TERMSRV/%s:%u";
 
 	PSTR TargetName = nullptr;
 	PSTR UserName = nullptr;
@@ -60,7 +62,7 @@ static void AddDefaultSettings_I(rdpSettings* settings, size_t idHostname, size_
 	if (bExistUserName && bExistPassword)
 		return;
 
-	int len = _snprintf(TargetName, 0, TERMSRV, ServerHostname);
+	int len = _snprintf(TargetName, 0, TERMSRV, ServerHostname, port);
 	if (len < 0)
 		goto fail;
 
@@ -70,7 +72,7 @@ static void AddDefaultSettings_I(rdpSettings* settings, size_t idHostname, size_
 	if (!TargetName)
 		goto fail;
 
-	const int rlen = _snprintf(TargetName, len, TERMSRV, ServerHostname);
+	const int rlen = _snprintf(TargetName, len, TERMSRV, ServerHostname, port);
 	if (rlen < 0)
 		goto fail;
 
@@ -93,7 +95,7 @@ static void AddDefaultSettings_I(rdpSettings* settings, size_t idHostname, size_
 		if (!PasswordNullTerminatedW)
 			goto fail;
 
-		memcpy(PasswordNullTerminatedW, PasswordW, Credential->CredentialBlobSize * sizeof(WCHAR));
+		memcpy(PasswordNullTerminatedW, PasswordW, Credential->CredentialBlobSize);
 
 		if (PasswordNullTerminatedW)
 		{
@@ -163,4 +165,50 @@ void WINAPI AddDefaultSettings(rdpSettings* settings)
 	                     FreeRDP_Password);
 	AddDefaultSettings_I(settings, FreeRDP_GatewayHostname, FreeRDP_GatewayUsername,
 	                     FreeRDP_GatewayDomain, FreeRDP_GatewayPassword);
+}
+
+BOOL SaveDefaultSettings(rdpSettings* settings)
+{
+	const char* host = freerdp_settings_get_string(settings, FreeRDP_ServerHostname);
+	const char* user = freerdp_settings_get_string(settings, FreeRDP_Username);
+	const char* domain = freerdp_settings_get_string(settings, FreeRDP_Domain);
+	const char* password = freerdp_settings_get_string(settings, FreeRDP_Password);
+	const UINT32 port = freerdp_settings_get_uint32(settings, FreeRDP_ServerPort);
+	char target[1100] = { 0 };
+	char account[1100] = { 0 };
+	if (!host || !user || !password)
+		return FALSE;
+	int size = port == 3389 ? snprintf(target, sizeof(target), "TERMSRV/%s", host) :
+	                         snprintf(target, sizeof(target), "TERMSRV/%s:%u", host, port);
+	if (size < 0 || (size_t)size >= sizeof(target))
+		return FALSE;
+	size = domain && domain[0] ? snprintf(account, sizeof(account), "%s\\%s", domain, user) :
+	                           snprintf(account, sizeof(account), "%s", user);
+	if (size < 0 || (size_t)size >= sizeof(account))
+		return FALSE;
+	WCHAR* targetW = ConvertUtf8ToWCharAlloc(target, nullptr);
+	WCHAR* accountW = ConvertUtf8ToWCharAlloc(account, nullptr);
+	WCHAR* passwordW = ConvertUtf8ToWCharAlloc(password, nullptr);
+	BOOL result = FALSE;
+	if (targetW && accountW && passwordW)
+	{
+		const size_t bytes = wcslen(passwordW) * sizeof(WCHAR);
+		if (bytes <= CRED_MAX_CREDENTIAL_BLOB_SIZE)
+		{
+			CREDENTIALW credential = { 0 };
+			credential.Type = CRED_TYPE_GENERIC;
+			credential.TargetName = targetW;
+			credential.UserName = accountW;
+			credential.CredentialBlobSize = (DWORD)bytes;
+			credential.CredentialBlob = (BYTE*)passwordW;
+			credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
+			result = CredWriteW(&credential, 0);
+		}
+	}
+	if (passwordW)
+		SecureZeroMemory(passwordW, wcslen(passwordW) * sizeof(WCHAR));
+	free(passwordW);
+	free(accountW);
+	free(targetW);
+	return result;
 }

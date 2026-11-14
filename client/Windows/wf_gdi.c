@@ -298,16 +298,18 @@ void wf_update_offset(wfContext* wfc)
 		}
 		else
 		{
-			wfc->offset_x = (GetSystemMetrics(SM_CXSCREEN) -
-			                 freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth)) /
-			                2;
+			const int screenWidth = wfc->studioMonitorSet ?
+			                            (wfc->studioMonitorRect.right - wfc->studioMonitorRect.left) :
+			                            GetSystemMetrics(SM_CXSCREEN);
+			const int screenHeight = wfc->studioMonitorSet ?
+			                             (wfc->studioMonitorRect.bottom - wfc->studioMonitorRect.top) :
+			                             GetSystemMetrics(SM_CYSCREEN);
+			wfc->offset_x = (screenWidth - freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth)) / 2;
 
 			if (wfc->offset_x < 0)
 				wfc->offset_x = 0;
 
-			wfc->offset_y = (GetSystemMetrics(SM_CYSCREEN) -
-			                 freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight)) /
-			                2;
+			wfc->offset_y = (screenHeight - freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight)) / 2;
 
 			if (wfc->offset_y < 0)
 				wfc->offset_y = 0;
@@ -338,9 +340,16 @@ void wf_resize_window(wfContext* wfc)
 		}
 		else
 		{
+			const int x = wfc->studioMonitorSet ? wfc->studioMonitorRect.left : 0;
+			const int y = wfc->studioMonitorSet ? wfc->studioMonitorRect.top : 0;
+			const int w = wfc->studioMonitorSet ?
+			                  (wfc->studioMonitorRect.right - wfc->studioMonitorRect.left) :
+			                  GetSystemMetrics(SM_CXSCREEN);
+			const int h = wfc->studioMonitorSet ?
+			                  (wfc->studioMonitorRect.bottom - wfc->studioMonitorRect.top) :
+			                  GetSystemMetrics(SM_CYSCREEN);
 			SetWindowLongPtr(wfc->hwnd, GWL_STYLE, WS_POPUP);
-			SetWindowPos(wfc->hwnd, HWND_TOP, 0, 0, GetSystemMetrics(SM_CXSCREEN),
-			             GetSystemMetrics(SM_CYSCREEN), SWP_FRAMECHANGED);
+			SetWindowPos(wfc->hwnd, HWND_TOP, x, y, w, h, SWP_FRAMECHANGED);
 		}
 	}
 	else if (!freerdp_settings_get_bool(wfc->common.context.settings, FreeRDP_Decorations))
@@ -433,6 +442,11 @@ void wf_toggle_fullscreen(wfContext* wfc)
 	ShowWindow(wfc->hwnd, SW_HIDE);
 	wfc->fullscreen = !wfc->fullscreen;
 
+	/* Windowed sessions scale the remote desktop to the window instead of leaving the
+	 * uncovered area black; fullscreen stays 1:1 so the picture keeps its sharpness. */
+	(void)freerdp_settings_set_bool(wfc->common.context.settings, FreeRDP_SmartSizing,
+	                                wfc->fullscreen ? FALSE : TRUE);
+
 	if (wfc->fullscreen)
 	{
 		wfc->disablewindowtracking = TRUE;
@@ -441,6 +455,8 @@ void wf_toggle_fullscreen(wfContext* wfc)
 	wf_floatbar_toggle_fullscreen(wfc->floatbar, wfc->fullscreen);
 	SetParent(wfc->hwnd, wfc->fullscreen ? nullptr : wfc->hWndParent);
 	wf_resize_window(wfc);
+	(void)wf_floatbar_set_scale(wfc->floatbar, wf_window_display_scale(wfc));
+	(void)wf_floatbar_reset_position(wfc->floatbar);
 	ShowWindow(wfc->hwnd, SW_SHOW);
 	SetForegroundWindow(wfc->hwnd);
 

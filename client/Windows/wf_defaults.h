@@ -24,5 +24,6 @@
 #include <freerdp/settings.h>
 
 FREERDP_API void WINAPI AddDefaultSettings(_Inout_ rdpSettings* settings);
+BOOL SaveDefaultSettings(rdpSettings* settings);
 
 #endif /* FREERDP_CLIENT_WIN_DEFAULTS_H */
