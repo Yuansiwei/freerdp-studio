@@ -1,4 +1,4 @@
-﻿
+
 #pragma code_page(65001)
 #include "resource.h"
 #include <windows.h>
@@ -15,26 +15,27 @@ IDB_CLOSE_ACT          BITMAP                  "close_active.bmp"
 IDB_RESTORE            BITMAP                  "restore.bmp"
 IDB_RESTORE_ACT        BITMAP                  "restore_active.bmp"
 
-IDD_STUDIO_CONNECT DIALOGEX 0, 0, 262, 252
+IDD_STUDIO_CONNECT DIALOGEX 0, 0, 264, 186
 STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "远程桌面连接"
 FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
-    CONTROL         IDI_ICON1, IDC_STUDIO_ICON, "Static", SS_ICON | WS_CHILD, 9, 9, 32, 32
-    LTEXT           "远程桌面连接", IDC_STUDIO_TITLE, 50, 12, 200, 12
-    LTEXT           "输入要连接到的计算机名称。", -1, 50, 26, 200, 10
+    CONTROL         IDI_ICON1, IDC_STUDIO_ICON, "Static", SS_ICON | WS_CHILD, 10, 10, 32, 32
+    LTEXT           "远程桌面连接", IDC_STUDIO_TITLE, 52, 16, 200, 18
 
-    GROUPBOX        "连接目标", -1, 7, 46, 248, 82
-    LTEXT           "计算机(&C):", -1, 15, 62, 52, 10
-    COMBOBOX        IDC_STUDIO_SERVER, 15, 74, 232, 80, CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "用户名(&U):", -1, 15, 98, 52, 10
-    EDITTEXT        IDC_STUDIO_USER, 72, 96, 175, 14, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "计算机(&C):", -1, 12, 60, 50, 10
+    COMBOBOX        IDC_STUDIO_SERVER, 66, 57, 186, 90, CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
 
-    GROUPBOX        "登录设置", -1, 7, 134, 248, 64
-    LTEXT           "密码(&P):", -1, 15, 150, 52, 10
-    EDITTEXT        IDC_STUDIO_PASSWORD, 72, 148, 175, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
-    CONTROL         "记住密码(&R)", IDC_STUDIO_REMEMBER, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 72, 170, 120, 12
+    LTEXT           "用户名(&U):", -1, 12, 84, 50, 10
+    EDITTEXT        IDC_STUDIO_USER, 66, 82, 186, 14, ES_AUTOHSCROLL | WS_TABSTOP
 
-    DEFPUSHBUTTON   "连接(&O)", IDOK, 148, 226, 52, 18
-    PUSHBUTTON      "取消", IDCANCEL, 205, 226, 52, 18
+    LTEXT           "密码(&P):", -1, 12, 108, 50, 10
+    EDITTEXT        IDC_STUDIO_PASSWORD, 66, 106, 186, 14, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
+
+    CONTROL         "记住密码(&R)", IDC_STUDIO_REMEMBER, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 66, 126, 120, 12
+
+    LTEXT           "将使用保存的凭据连接到此计算机。", -1, 12, 146, 240, 10
+
+    DEFPUSHBUTTON   "连接(&N)", IDOK, 148, 162, 52, 16
+    PUSHBUTTON      "取消", IDCANCEL, 205, 162, 52, 16
 END
