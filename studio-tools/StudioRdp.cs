@@ -1,26 +1,32 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Windows.Forms;
 
-// StudioRdp: 专用 RDP 客户端启动器（成品 exe，无自制界面）。
-// 只负责拉起 FreeRDP 原生客户端、失败重试、日志落盘，并在会话期间后台驻留。
+// StudioRdp: 专用 RDP 客户端启动器。
+// 不带参数时弹出地址选择框（带历史），也可以直接用命令行指定目标。
+// 远程桌面本身是 FreeRDP 原生界面，本程序不介入。
 internal static class StudioRdp
 {
     private const string DefaultServer = "192.168.98.184";
     private const int DefaultPort = 3389;
     private const int ActivationWindowMs = 30000;
-    private const int RetryDelayMs = 2000;
+    private const int HistoryLimit = 10;
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int MessageBoxW(IntPtr owner, string text, string caption, uint type);
 
+    private static string _root;
     private static string _client;
     private static string _log;
+    private static string _history;
 
+    [STAThread]
     private static int Main(string[] args)
     {
         try
@@ -36,9 +42,10 @@ internal static class StudioRdp
 
     private static int Run(string[] args)
     {
-        string root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
-        _client = FindClient(root);
-        _log = Path.Combine(root, "client.stderr.log");
+        _root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
+        _client = FindClient(_root);
+        _log = Path.Combine(_root, "client.stderr.log");
+        _history = Path.Combine(_root, "servers.txt");
 
         if (_client == null)
         {
@@ -46,7 +53,7 @@ internal static class StudioRdp
             return 2;
         }
 
-        string server = DefaultServer;
+        string server = null;
         int port = DefaultPort;
         string user = null;
         int scale = 0;
@@ -58,19 +65,43 @@ internal static class StudioRdp
             if (arg == "--user") { if (++i < args.Length) user = args[i]; }
             else if (arg == "--scale") { if (++i < args.Length) int.TryParse(args[i], out scale); }
             else if (arg == "--attempts") { if (++i < args.Length) int.TryParse(args[i], out attempts); }
+            else if (arg == "--help" || arg == "-h")
+            {
+                MessageBoxW(IntPtr.Zero,
+                    "用法：StudioRdp.exe [服务器[:端口]] [--user 用户名] [--scale 100-500] [--attempts 次数]\n\n"
+                    + "不带参数时弹出地址选择框，连过的地址会被记住。",
+                    "StudioRdp", 0x40);
+                return 0;
+            }
             else if (!arg.StartsWith("--"))
             {
-                string host;
-                int value = port;
-                SplitServer(arg, ref value, out host);
-                if (!string.IsNullOrEmpty(host)) { server = host; port = value; }
+                server = arg;
             }
         }
 
         if (attempts < 1) attempts = 1;
         if (attempts > 5) attempts = 5;
 
-        string endpoint = server.IndexOf(':') >= 0 ? "[" + server + "]:" + port : server + ":" + port;
+        if (string.IsNullOrEmpty(server))
+        {
+            server = AskServer();
+            if (string.IsNullOrEmpty(server))
+                return 0;
+        }
+
+        string host;
+        int chosen = port;
+        SplitServer(server, ref chosen, out host);
+        if (string.IsNullOrEmpty(host))
+        {
+            Fail("地址无效：" + server);
+            return 4;
+        }
+        port = chosen;
+
+        Remember(host + (port == DefaultPort ? string.Empty : ":" + port));
+
+        string endpoint = host.IndexOf(':') >= 0 ? "[" + host + "]:" + port : host + ":" + port;
         string logTail = null;
 
         for (int attempt = 1; attempt <= attempts; attempt++)
@@ -86,10 +117,10 @@ internal static class StudioRdp
 
             logTail = pump.Tail(12);
             TryKill(process);
-            if (attempt < attempts) Thread.Sleep(RetryDelayMs);
+            if (attempt < attempts) Thread.Sleep(2000);
         }
 
-        Fail("连接失败：远端会话没有在 " + (ActivationWindowMs / 1000) + " 秒内激活，已重试 " + attempts + " 次。\n\n"
+        Fail("连接失败：远端会话没有在 " + (ActivationWindowMs / 1000) + " 秒内激活。\n\n"
              + (logTail ?? "（无日志）"));
         return 3;
     }
@@ -131,6 +162,87 @@ internal static class StudioRdp
             if (File.Exists(candidate)) return candidate;
         return null;
     }
+
+    // ---- 地址选择框与历史 ----
+
+    private static string AskServer()
+    {
+        using (var form = new Form())
+        {
+            form.Text = "连接远程桌面";
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.StartPosition = FormStartPosition.CenterScreen;
+            form.MaximizeBox = false;
+            form.MinimizeBox = false;
+            form.ClientSize = new Size(430, 128);
+            form.TopMost = true;
+
+            var label = new Label
+            {
+                Text = "地址（可带端口）：",
+                Location = new Point(16, 14),
+                Size = new Size(390, 20),
+            };
+
+            var combo = new ComboBox
+            {
+                Location = new Point(16, 36),
+                Size = new Size(398, 26),
+                DropDownStyle = ComboBoxStyle.DropDown,
+            };
+            combo.Items.AddRange(LoadHistory().ToArray());
+            combo.Text = combo.Items.Count > 0 ? (string)combo.Items[0] : DefaultServer;
+
+            var ok = new Button { Text = "连接", DialogResult = DialogResult.OK, Location = new Point(256, 80), Size = new Size(74, 30) };
+            var cancel = new Button { Text = "取消", DialogResult = DialogResult.Cancel, Location = new Point(340, 80), Size = new Size(74, 30) };
+
+            form.Controls.Add(label);
+            form.Controls.Add(combo);
+            form.Controls.Add(ok);
+            form.Controls.Add(cancel);
+            form.AcceptButton = ok;
+            form.CancelButton = cancel;
+
+            if (form.ShowDialog() != DialogResult.OK)
+                return null;
+
+            string value = combo.Text.Trim();
+            return value.Length == 0 ? null : value;
+        }
+    }
+
+    private static List<string> LoadHistory()
+    {
+        var list = new List<string>();
+        try
+        {
+            if (!File.Exists(_history)) return list;
+            foreach (string line in File.ReadAllLines(_history))
+            {
+                string value = line.Trim();
+                if (value.Length > 0 && !list.Contains(value)) list.Add(value);
+                if (list.Count >= HistoryLimit) break;
+            }
+        }
+        catch { /* 历史读不出来不影响启动 */ }
+        return list;
+    }
+
+    private static void Remember(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return;
+        try
+        {
+            var list = LoadHistory();
+            list.RemoveAll(existing => string.Equals(existing, value, StringComparison.OrdinalIgnoreCase));
+            list.Insert(0, value);
+            if (list.Count > HistoryLimit) list.RemoveRange(HistoryLimit, list.Count - HistoryLimit);
+            File.WriteAllLines(_history, list.ToArray(), Encoding.UTF8);
+        }
+        catch { /* 记不住历史不影响启动 */ }
+    }
+
+    // ---- 客户端进程 ----
 
     private static List<string> BuildOptions(string endpoint, string user, int scale)
     {
