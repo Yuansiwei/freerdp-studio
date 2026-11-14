@@ -30,6 +30,9 @@ LRESULT CALLBACK wf_event_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam
 
 void wf_event_focus_in(wfContext* wfc);
 
+/* Announce the current window size (and, where supported, scale) to the server. */
+void wf_send_resize(wfContext* wfc);
+
 BOOL wf_keyboard_set_indicators(rdpContext* context, UINT16 led_flags);
 
 #define KBD_TAG CLIENT_TAG("windows")

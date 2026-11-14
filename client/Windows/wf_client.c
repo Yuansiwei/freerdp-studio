@@ -60,9 +60,11 @@
 #include <freerdp/utils/signal.h>
 
 #include "wf_gdi.h"
+#include "wf_event.h"
 #include "wf_rail.h"
 #include "wf_channels.h"
 #include "wf_graphics.h"
+#include "wf_defaults.h"
 
 #include "resource/resource.h"
 
@@ -165,6 +167,211 @@ static BOOL wf_end_paint(rdpContext* context)
 	return TRUE;
 }
 
+/* Windows only honours this fixed set of session scale factors. */
+UINT32 studio_scale_from_dpi(UINT32 dpi)
+{
+	static const UINT32 steps[] = { 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500 };
+	const UINT32 requested = (dpi * 100) / USER_DEFAULT_SCREEN_DPI;
+	UINT32 best = steps[0];
+
+	for (size_t x = 0; x < ARRAYSIZE(steps); x++)
+	{
+		if (steps[x] <= requested)
+			best = steps[x];
+	}
+
+	return best;
+}
+
+/* Resolve the effective DPI of a single monitor. */
+static UINT32 studio_dpi_for_monitor(HMONITOR mon)
+{
+	typedef HRESULT(WINAPI * GetDpiForMonitor_t)(HMONITOR, int, UINT*, UINT*);
+	UINT dpi = USER_DEFAULT_SCREEN_DPI;
+	HMODULE shcore = nullptr;
+
+	if (!mon)
+		return dpi;
+
+	shcore = LoadLibraryA("shcore.dll");
+	if (shcore)
+	{
+		GetDpiForMonitor_t getDpi =
+		    GetProcAddressAs(shcore, "GetDpiForMonitor", GetDpiForMonitor_t);
+		if (getDpi)
+		{
+			UINT dpiX = USER_DEFAULT_SCREEN_DPI;
+			UINT dpiY = USER_DEFAULT_SCREEN_DPI;
+			/* MDT_EFFECTIVE_DPI */
+			if (SUCCEEDED(getDpi(mon, 0, &dpiX, &dpiY)) && (dpiX != 0))
+				dpi = dpiX;
+		}
+		FreeLibrary(shcore);
+	}
+	return dpi;
+}
+
+typedef struct
+{
+	rdpMonitor* monitors;
+	size_t capacity;
+	size_t count;
+} StudioMonitorList;
+
+static BOOL CALLBACK studio_monitor_enum_cb(HMONITOR mon, HDC hdc, LPRECT rect, LPARAM arg)
+{
+	StudioMonitorList* list = (StudioMonitorList*)arg;
+	MONITORINFO mi = WINPR_C_ARRAY_INIT;
+	rdpMonitor* out = nullptr;
+	const UINT32 scale = studio_scale_from_dpi(studio_dpi_for_monitor(mon));
+
+	WINPR_UNUSED(hdc);
+	WINPR_UNUSED(rect);
+
+	if (!list || (list->count >= list->capacity))
+		return FALSE;
+
+	mi.cbSize = sizeof(mi);
+	if (!GetMonitorInfoW(mon, &mi))
+		return TRUE;
+
+	out = &list->monitors[list->count++];
+	out->x = mi.rcMonitor.left;
+	out->y = mi.rcMonitor.top;
+	out->width = mi.rcMonitor.right - mi.rcMonitor.left;
+	out->height = mi.rcMonitor.bottom - mi.rcMonitor.top;
+	out->is_primary = (mi.dwFlags & MONITORINFOF_PRIMARY) ? TRUE : FALSE;
+	out->attributes.orientation = 0;
+	out->attributes.desktopScaleFactor = scale;
+	out->attributes.deviceScaleFactor = scale;
+	return TRUE;
+}
+
+/* Describe every display, each with its own scale, so the session can span them. */
+static BOOL studio_fill_span_monitors(wfContext* wfc)
+{
+	rdpSettings* settings = wfc->common.context.settings;
+	rdpMonitor monitors[16] = { 0 };
+	StudioMonitorList list = { monitors, ARRAYSIZE(monitors), 0 };
+
+	if (!EnumDisplayMonitors(nullptr, nullptr, studio_monitor_enum_cb, (LPARAM)&list))
+		return FALSE;
+	if (list.count == 0)
+		return FALSE;
+
+	return freerdp_settings_set_monitor_def_array_sorted(settings, monitors, list.count);
+}
+
+/* Resolve the monitor that should host the session and report its effective DPI. */
+static UINT32 studio_resolve_target_monitor(wfContext* wfc)
+{
+	MONITORINFO mi = WINPR_C_ARRAY_INIT;
+	POINT pt = WINPR_C_ARRAY_INIT;
+	HMONITOR mon = nullptr;
+
+	mi.cbSize = sizeof(mi);
+
+	if (wfc->hwnd)
+		mon = MonitorFromWindow(wfc->hwnd, MONITOR_DEFAULTTOPRIMARY);
+	else if (GetCursorPos(&pt))
+		mon = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+
+	if (!mon || !GetMonitorInfo(mon, &mi))
+		return USER_DEFAULT_SCREEN_DPI;
+
+	wfc->studioMonitorRect = mi.rcMonitor;
+	wfc->studioMonitorSet = TRUE;
+	return studio_dpi_for_monitor(mon);
+}
+
+/* Session scale factor that matches the display the window currently sits on. */
+UINT32 wf_window_display_scale(wfContext* wfc)
+{
+	HMONITOR mon = nullptr;
+
+	if (!wfc || !wfc->hwnd)
+		return 100;
+
+	mon = MonitorFromWindow(wfc->hwnd, MONITOR_DEFAULTTONEAREST);
+	return studio_scale_from_dpi(studio_dpi_for_monitor(mon));
+}
+
+/* Snap the session onto the display it currently overlaps and re-announce the size. */
+void wf_snap_to_monitor(wfContext* wfc)
+{
+	rdpSettings* settings = nullptr;
+	MONITORINFO mi = WINPR_C_ARRAY_INIT;
+	HMONITOR mon = nullptr;
+	UINT32 scale = 100;
+	UINT32 previous = 100;
+
+	if (!wfc || !wfc->hwnd)
+		return;
+
+	settings = wfc->common.context.settings;
+	previous = freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor);
+	mi.cbSize = sizeof(mi);
+	mon = MonitorFromWindow(wfc->hwnd, MONITOR_DEFAULTTONEAREST);
+	if (!mon || !GetMonitorInfo(mon, &mi))
+		return;
+
+	wfc->studioMonitorRect = mi.rcMonitor;
+	wfc->studioMonitorSet = TRUE;
+	scale = studio_scale_from_dpi(studio_dpi_for_monitor(mon));
+
+	if (wfc->fullscreen)
+		SetWindowPos(wfc->hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+		             mi.rcMonitor.right - mi.rcMonitor.left,
+		             mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOZORDER | SWP_NOACTIVATE);
+
+	if (!freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, scale))
+		return;
+
+	/* Size the connection bar after the display it is shown on, not after the session DPI. */
+	if (wfc->floatbar)
+		(void)wf_floatbar_set_scale(wfc->floatbar, wf_window_display_scale(wfc));
+
+	/* A live session keeps the DPI it was created with; only the size can be changed. */
+	wf_send_resize(wfc);
+}
+
+/* Temporary layout probe, enabled with STUDIO_LAYOUT_DEBUG=1. */
+static void studio_log_layout(const char* where, wfContext* wfc)
+{
+	char probe[8] = WINPR_C_ARRAY_INIT;
+	RECT wr = WINPR_C_ARRAY_INIT;
+	RECT cr = WINPR_C_ARRAY_INIT;
+	MONITORINFO mi = WINPR_C_ARRAY_INIT;
+	rdpSettings* settings = nullptr;
+
+	if (!wfc || !wfc->hwnd)
+		return;
+
+	if (GetEnvironmentVariableA("STUDIO_LAYOUT_DEBUG", probe, sizeof(probe)) == 0)
+		return;
+
+	settings = wfc->common.context.settings;
+	GetWindowRect(wfc->hwnd, &wr);
+	GetClientRect(wfc->hwnd, &cr);
+	mi.cbSize = sizeof(mi);
+	GetMonitorInfo(MonitorFromWindow(wfc->hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+	WLog_WARN(TAG,
+	          "layout[%s] dpy=(%d,%d) virt=(%d,%d)@(%d,%d) mon=(%d,%d)-(%d,%d) "
+	          "win=(%d,%d)-(%d,%d) client=%dx%d desktop=%ux%u offset=(%d,%d) full=%d "
+	          "scale=(desk %u, dev %u) smart=%d",
+	          where, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
+	          GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN),
+	          GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
+	          mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right, mi.rcMonitor.bottom,
+	          wr.left, wr.top, wr.right, wr.bottom, cr.right, cr.bottom,
+	          freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
+	          freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight), wfc->offset_x,
+	          wfc->offset_y, wfc->fullscreen,
+	          freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor),
+	          freerdp_settings_get_uint32(settings, FreeRDP_DeviceScaleFactor),
+	          freerdp_settings_get_bool(settings, FreeRDP_SmartSizing));
+}
+
 static BOOL wf_begin_paint(rdpContext* context)
 {
 	HGDI_DC hdc;
@@ -227,6 +434,7 @@ static BOOL wf_desktop_resize(rdpContext* context)
 		InvalidateRect(wfc->hwnd, &rect, TRUE);
 	}
 
+	studio_log_layout("desktop_resize", wfc);
 	return TRUE;
 }
 
@@ -258,18 +466,42 @@ static BOOL wf_pre_connect(freerdp* instance)
 			return FALSE;
 	}
 
+	/* Resolve the display the session starts on, for both windowed and fullscreen. */
+	const UINT32 monitorDpi = studio_resolve_target_monitor(wfc);
+
 	if (wfc->fullscreen)
 	{
 		if (freerdp_settings_get_bool(settings, FreeRDP_UseMultimon))
 		{
+			/* Span every display, each with its own scale factor. */
+			if (!studio_fill_span_monitors(wfc))
+				return FALSE;
 			desktopWidth = GetSystemMetrics(SM_CXVIRTUALSCREEN);
 			desktopHeight = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 		}
 		else
 		{
-			desktopWidth = GetSystemMetrics(SM_CXSCREEN);
-			desktopHeight = GetSystemMetrics(SM_CYSCREEN);
+			/* Pin the session to one monitor and match that monitor's scale. */
+			desktopWidth = (UINT32)(wfc->studioMonitorRect.right - wfc->studioMonitorRect.left);
+			desktopHeight = (UINT32)(wfc->studioMonitorRect.bottom - wfc->studioMonitorRect.top);
 		}
+
+		/* Fullscreen sessions get an mstsc style connection bar by default:
+		 * enabled, pinned, visible, fullscreen only, centered. */
+		if (freerdp_settings_get_uint32(settings, FreeRDP_Floatbar) == 0)
+		{
+			if (!freerdp_settings_set_uint32(settings, FreeRDP_Floatbar, 0x0017))
+				return FALSE;
+		}
+	}
+
+	/* Only derive the scale when the user did not pin one explicitly. */
+	if (freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor) == 100)
+	{
+		if (!freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor,
+		                                 studio_scale_from_dpi(monitorDpi)))
+			return FALSE;
+		wfc->studioAutoScale = TRUE;
 	}
 
 	/* FIXME: desktopWidth has a limitation that it should be divisible by 4,
@@ -473,9 +705,38 @@ static BOOL wf_post_connect(freerdp* instance)
 			return FALSE;
 		}
 		SetWindowLongPtr(wfc->hwnd, GWLP_USERDATA, (LONG_PTR)wfc);
+		if (!SetTimer(wfc->hwnd, STUDIO_KEEPALIVE_TIMER, STUDIO_KEEPALIVE_IDLE_MS, nullptr))
+			return FALSE;
+	}
+
+	/* Open windowed sessions on the display the pointer was on at startup. */
+	if (!wfc->fullscreen && wfc->studioMonitorSet)
+	{
+		const int width = WINPR_ASSERTING_INT_CAST(
+		    int, freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth));
+		const int height = WINPR_ASSERTING_INT_CAST(
+		    int, freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight));
+		const int x = wfc->studioMonitorRect.left +
+		              ((wfc->studioMonitorRect.right - wfc->studioMonitorRect.left) - width) / 2;
+		const int y = wfc->studioMonitorRect.top +
+		              ((wfc->studioMonitorRect.bottom - wfc->studioMonitorRect.top) - height) / 2;
+
+		SetWindowPos(wfc->hwnd, HWND_TOP, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 	}
 
 	wf_resize_window(wfc);
+
+	/* A windowed session may not have opened on the display picked before connecting.
+	 * Align the session scale with the display the window actually sits on. */
+	if (!wfc->fullscreen && wfc->studioAutoScale)
+	{
+		const UINT32 dpi = studio_resolve_target_monitor(wfc);
+
+		(void)freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor,
+		                                 studio_scale_from_dpi(dpi));
+	}
+
+	studio_log_layout("post_connect", wfc);
 	wf_add_system_menu(wfc);
 	BitBlt(wfc->primary->hdc, 0, 0, freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
 	       freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight), nullptr, 0, 0, BLACKNESS);
@@ -503,7 +764,17 @@ static BOOL wf_post_connect(freerdp* instance)
 	wfc->floatbar = wf_floatbar_new(wfc, wfc->hInstance,
 	                                freerdp_settings_get_uint32(settings, FreeRDP_Floatbar));
 
+	/* The display channel is not connected yet, so announce size and scale on a short delay. */
+	if (!SetTimer(wfc->hwnd, STUDIO_SYNC_TIMER, STUDIO_SYNC_DELAY_MS, nullptr))
+		return FALSE;
+
 	wf_event_focus_in(wfc);
+	if (wfc->studioSaveCredentials)
+	{
+		if (!SaveDefaultSettings(settings))
+			WLog_WARN(TAG, "Could not save credentials in Windows Credential Manager: %lu", GetLastError());
+		wfc->studioSaveCredentials = FALSE;
+	}
 
 	return TRUE;
 }
@@ -556,7 +827,7 @@ static BOOL wf_authenticate_ex(freerdp* instance, char** username, char** passwo
 	const WCHAR gwAuth[] = L"Gateway credentials requested";
 	const WCHAR* titleW = auth;
 
-	fSave = FALSE;
+	fSave = TRUE;
 	dwFlags = CREDUI_FLAGS_DO_NOT_PERSIST | CREDUI_FLAGS_EXCLUDE_CERTIFICATES |
 	          CREDUI_FLAGS_USERNAME_TARGET_CREDENTIALS;
 	switch (reason)
@@ -585,6 +856,8 @@ static BOOL wf_authenticate_ex(freerdp* instance, char** username, char** passwo
 		default:
 			return FALSE;
 	}
+	if (reason == AUTH_NLA || reason == AUTH_TLS || reason == AUTH_RDP)
+		dwFlags |= CREDUI_FLAGS_SHOW_SAVE_CHECK_BOX;
 
 	if (*username)
 	{
@@ -639,6 +912,8 @@ static BOOL wf_authenticate_ex(freerdp* instance, char** username, char** passwo
 		}
 	}
 
+	if (reason == AUTH_NLA || reason == AUTH_TLS || reason == AUTH_RDP)
+		wfc->studioSaveCredentials = fSave;
 	*username = ConvertWCharNToUtf8Alloc(UserW, ARRAYSIZE(UserW), nullptr);
 	if (!(*username))
 	{
@@ -796,7 +1071,8 @@ static DWORD wf_is_x509_certificate_trusted(const char* common_name, const char*
 	PolicyStatus.cbSize = sizeof(PolicyStatus);
 
 	EngineConfig.cbSize = sizeof(EngineConfig);
-	EngineConfig.dwUrlRetrievalTimeout = 0;
+	EngineConfig.dwUrlRetrievalTimeout = 5000;
+	dwChainFlags |= CERT_CHAIN_REVOCATION_ACCUMULATIVE_TIMEOUT;
 
 	pCert = CertCreateCertificateContext(X509_ASN_ENCODING, derPubKey, derPubKeyLen);
 	if (nullptr == pCert)

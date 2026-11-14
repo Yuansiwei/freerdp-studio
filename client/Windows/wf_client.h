@@ -43,6 +43,14 @@
 #include <freerdp/codec/nsc.h>
 #include <freerdp/client/file.h>
 
+/* Identifies the single window timer that injects the idle keep alive key. */
+#define STUDIO_KEEPALIVE_TIMER 0x53544615
+/* The keep alive key is only sent after this much time without any input. */
+#define STUDIO_KEEPALIVE_IDLE_MS 120000
+/* One shot timer that announces the initial size and scale once the display channel is up. */
+#define STUDIO_SYNC_TIMER 0x53544501
+#define STUDIO_SYNC_DELAY_MS 1500
+
 #include "wf_channels.h"
 #include "wf_floatbar.h"
 #include "wf_event.h"
@@ -99,6 +107,15 @@ extern "C"
 		UINT systemMenuInsertPosition;
 
 		HWND hwnd;
+		UINT64 studioKeepAliveCount;
+		BOOL studioSaveCredentials;
+		/* Monitor the fullscreen session is pinned to, and whether it is valid. */
+		RECT studioMonitorRect;
+		BOOL studioMonitorSet;
+		/* Session scale last announced to the server, in percent. */
+		UINT32 studioSentScale;
+		/* The session scale was derived from the display, not pinned by the user. */
+		BOOL studioAutoScale;
 		BOOL is_shown;
 		ITaskbarList3* taskBarList;
 		POINT diff;
@@ -150,6 +167,15 @@ extern "C"
 	FREERDP_API int RdpClientEntry(RDP_CLIENT_ENTRY_POINTS* pEntryPoints);
 	FREERDP_API int freerdp_client_set_window_size(wfContext* wfc, int width, int height);
 	FREERDP_API void wf_size_scrollbars(wfContext* wfc, UINT32 client_width, UINT32 client_height);
+
+	/* Map a monitor DPI to the closest session scale factor Windows accepts. */
+	UINT32 studio_scale_from_dpi(UINT32 dpi);
+
+	/* Snap a fullscreen session onto the display it currently overlaps. */
+	void wf_snap_to_monitor(wfContext* wfc);
+
+	/* Session scale factor that matches the display the window currently sits on. */
+	UINT32 wf_window_display_scale(wfContext* wfc);
 
 #ifdef __cplusplus
 }

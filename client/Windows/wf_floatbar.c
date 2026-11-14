@@ -87,6 +87,8 @@ struct s_FloatBar
 {
 	HINSTANCE root_window;
 	DWORD flags;
+	/* Session scale in percent, so the bar matches the remote UI size. */
+	UINT32 zoom;
 	HWND parent;
 	HWND hwnd;
 	RECT rect;
@@ -101,6 +103,14 @@ struct s_FloatBar
 	RECT textRect;
 	UINT_PTR animating;
 };
+
+/* Scale a layout constant designed at 100% to the current session scale. */
+static int floatbar_scale(const wfFloatBar* floatbar, int value)
+{
+	const int zoom = (int)floatbar->zoom;
+
+	return (value * zoom) / 100;
+}
 
 static BOOL floatbar_kill_timers(wfFloatBar* floatbar)
 {
@@ -274,13 +284,27 @@ static int button_paint(const Button* const button, const HDC hdc)
 	{
 		wfFloatBar* floatbar = button->floatbar;
 		BLENDFUNCTION bf;
-		SelectObject(floatbar->hdcmem, button->active ? button->bmp_act : button->bmp);
+		HBITMAP bitmap = button->active ? button->bmp_act : button->bmp;
+		BITMAP info = WINPR_C_ARRAY_INIT;
+		int sourceWidth = button->w;
+		int sourceHeight = button->h;
+
+		if (!bitmap)
+			return 0;
+
+		if (GetObject(bitmap, sizeof(info), &info) > 0 && (info.bmWidth > 0) && (info.bmHeight > 0))
+		{
+			sourceWidth = info.bmWidth;
+			sourceHeight = info.bmHeight;
+		}
+
+		SelectObject(floatbar->hdcmem, bitmap);
 		bf.BlendOp = AC_SRC_OVER;
 		bf.BlendFlags = 0;
 		bf.SourceConstantAlpha = 255;
 		bf.AlphaFormat = AC_SRC_ALPHA;
 		AlphaBlend(hdc, button->x, button->y, button->w, button->h, floatbar->hdcmem, 0, 0,
-		           button->w, button->h, bf);
+		           sourceWidth, sourceHeight, bf);
 	}
 
 	return 0;
@@ -381,17 +405,47 @@ static BOOL floatbar_update_layout(wfFloatBar* floatbar)
 	Button* close = floatbar_get_button_by_type(floatbar, BUTTON_CLOSE);
 	Button* restore = floatbar_get_button_by_type(floatbar, BUTTON_RESTORE);
 	Button* minimize = floatbar_get_button_by_type(floatbar, BUTTON_MINIMIZE);
+	Button* lock = floatbar_get_button_by_type(floatbar, BUTTON_LOCKPIN);
+	const int buttonWidth = floatbar_scale(floatbar, BUTTON_WIDTH);
+	const int buttonHeight = floatbar_scale(floatbar, BUTTON_HEIGHT);
+	const int buttonY = floatbar_scale(floatbar, BUTTON_Y);
+	const int spacing = floatbar_scale(floatbar, BUTTON_SPACING);
+	const int textX = floatbar_scale(floatbar, TEXT_X);
 
 	if (close)
-		close->x = (floatbar->width - (BACKGROUND_H + BUTTON_OFFSET)) - BUTTON_WIDTH;
+	{
+		close->x = (floatbar->width - floatbar_scale(floatbar, BACKGROUND_H + BUTTON_OFFSET)) -
+		           buttonWidth;
+		close->y = buttonY;
+		close->w = buttonWidth;
+		close->h = buttonHeight;
+	}
 
 	if (restore && close)
-		restore->x = close->x - (BUTTON_WIDTH + BUTTON_SPACING);
+	{
+		restore->x = close->x - (buttonWidth + spacing);
+		restore->y = buttonY;
+		restore->w = buttonWidth;
+		restore->h = buttonHeight;
+	}
 
 	if (minimize && restore)
-		minimize->x = restore->x - (BUTTON_WIDTH + BUTTON_SPACING);
+	{
+		minimize->x = restore->x - (buttonWidth + spacing);
+		minimize->y = buttonY;
+		minimize->w = buttonWidth;
+		minimize->h = buttonHeight;
+	}
 
-	SetRect(&floatbar->textRect, TEXT_X, 0, floatbar->width - TEXT_X, floatbar->height);
+	if (lock)
+	{
+		lock->x = floatbar_scale(floatbar, LOCK_X);
+		lock->y = buttonY;
+		lock->w = buttonWidth;
+		lock->h = buttonHeight;
+	}
+
+	SetRect(&floatbar->textRect, textX, 0, floatbar->width - textX, floatbar->height);
 	return TRUE;
 }
 
@@ -521,9 +575,10 @@ static BOOL floatbar_paint(wfFloatBar* const floatbar, const HDC hdc)
 	COLORREF rgbTop = RGB(117, 154, 198);
 	COLORREF rgbBottom = RGB(6, 55, 120);
 	const int top = 0;
-	int bottom = BACKGROUND_H - 1;
+	const int barHeight = WINPR_ASSERTING_INT_CAST(int, floatbar->height);
+	int bottom = barHeight - 1;
 	int left = 0;
-	const int angleOffset = BACKGROUND_H - 1;
+	const int angleOffset = barHeight - 1;
 
 	int right = floatbar->width - 1;
 	POINT pt[4];
@@ -531,10 +586,10 @@ static BOOL floatbar_paint(wfFloatBar* const floatbar, const HDC hdc)
 	pt[0].y = 0;
 	pt[1].x = floatbar->width;
 	pt[1].y = 0;
-	pt[2].x = floatbar->width - BACKGROUND_H;
-	pt[2].y = BACKGROUND_H;
-	pt[3].x = BACKGROUND_H;
-	pt[3].y = BACKGROUND_H;
+	pt[2].x = floatbar->width - barHeight;
+	pt[2].y = barHeight;
+	pt[3].x = barHeight;
+	pt[3].y = barHeight;
 	HRGN clipRgn = CreatePolygonRgn(pt, 4, ALTERNATE);
 	if (!clipRgn)
 		return FALSE;
@@ -577,9 +632,30 @@ static BOOL floatbar_paint(wfFloatBar* const floatbar, const HDC hdc)
 	SelectObject(hdc, orig);
 
 	const size_t wlen = wcslen(floatbar->wfc->window_title);
-	DrawText(hdc, floatbar->wfc->window_title, WINPR_ASSERTING_INT_CAST(int, wlen),
-	         &floatbar->textRect,
-	         DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX | DT_SINGLELINE);
+	/* Scale the caption with the session so the bar stays readable at any scale. */
+	LOGFONTW caption = WINPR_C_ARRAY_INIT;
+	NONCLIENTMETRICSW metrics = WINPR_C_ARRAY_INIT;
+	HFONT font = nullptr;
+	HGDIOBJECT originalFont = nullptr;
+	metrics.cbSize = sizeof(metrics);
+	if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0))
+		caption = metrics.lfCaptionFont;
+	else
+		wcscpy_s(caption.lfFaceName, ARRAYSIZE(caption.lfFaceName), L"Segoe UI");
+	caption.lfHeight = -floatbar_scale(floatbar, 14);
+	font = CreateFontIndirectW(&caption);
+	if (font)
+		originalFont = SelectObject(hdc, font);
+	SetBkMode(hdc, TRANSPARENT);
+	SetTextColor(hdc, RGB(255, 255, 255));
+	DrawTextW(hdc, floatbar->wfc->window_title, WINPR_ASSERTING_INT_CAST(int, wlen),
+	          &floatbar->textRect,
+	          DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX | DT_SINGLELINE);
+	if (font)
+	{
+		SelectObject(hdc, originalFont);
+		DeleteObject(font);
+	}
 
 	/* paint buttons */
 
@@ -599,6 +675,8 @@ static LRESULT CALLBACK floatbar_proc(const HWND hWnd, const UINT Msg, const WPA
 	static int btn_dwn_x = 0;
 	static int btn_dwn_y = 0;
 	static int btn_dwn_screen_x = 0;
+static int btn_dwn_screen_y = 0;
+static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 	static LONG drag_start_left = 0;
 	static LONG drag_start_width = 0;
 	static wfFloatBar* floatbar = nullptr;
@@ -616,9 +694,18 @@ static LRESULT CALLBACK floatbar_proc(const HWND hWnd, const UINT Msg, const WPA
 		case WM_CREATE:
 			floatbar = ((wfFloatBar*)((CREATESTRUCT*)lParam)->lpCreateParams);
 			floatbar->hwnd = hWnd;
-			GetWindowRect(floatbar->hwnd, &floatbar->rect);
-			floatbar->width = floatbar->rect.right - floatbar->rect.left;
-			floatbar->height = floatbar->rect.bottom - floatbar->rect.top;
+			/* A child window lives in parent client coordinates. GetWindowRect would mix
+			 * screen and client space and only matches when the parent sits at (0,0). */
+			{
+				RECT parentClient = WINPR_C_ARRAY_INIT;
+				GetClientRect(floatbar->parent, &parentClient);
+				floatbar->width = floatbar_scale(floatbar, BACKGROUND_W);
+				floatbar->height = floatbar_scale(floatbar, BACKGROUND_H);
+				floatbar->rect.left = ((parentClient.right - parentClient.left) - floatbar->width) / 2;
+				if (floatbar->rect.left < 0)
+					floatbar->rect.left = 0;
+				floatbar->rect.top = 0;
+			}
 			floatbar_update_layout(floatbar);
 			hdc = GetDC(hWnd);
 			floatbar->hdcmem = CreateCompatibleDC(hdc);
@@ -665,6 +752,8 @@ static LRESULT CALLBACK floatbar_proc(const HWND hWnd, const UINT Msg, const WPA
 				btn_dwn_x = pos_x;
 				btn_dwn_y = pos_y;
 				btn_dwn_screen_x = pt.x;
+				btn_dwn_screen_y = pt.y;
+				GetWindowRect(floatbar->wfc->hwnd, &drag_start_window);
 				drag_start_left = floatbar->rect.left;
 				drag_start_width = floatbar->width;
 			}
@@ -680,7 +769,12 @@ static LRESULT CALLBACK floatbar_proc(const HWND hWnd, const UINT Msg, const WPA
 			drag_mode = DRAG_NONE;
 			ReleaseCapture();
 			if (was_dragging)
+			{
+				/* Dropping the bar re-binds the session to the display it now covers. */
+				if (floatbar->wfc->fullscreen)
+					wf_snap_to_monitor(floatbar->wfc);
 				floatbar_trigger_hide(floatbar);
+			}
 
 			if (lbtn_dwn)
 			{
@@ -722,15 +816,23 @@ static LRESULT CALLBACK floatbar_proc(const HWND hWnd, const UINT Msg, const WPA
 					const int dy = pos_y - btn_dwn_y;
 					const int dy_threshold = floatbar->height * RESTORE_DRAG_BAR_MULTIPLIER;
 
+					/* Dragging the bar downwards leaves fullscreen; the window then keeps
+					 * following the pointer until the button is released. */
 					if (dy > dy_threshold && floatbar->wfc->fullscreen_toggle &&
 					    floatbar->wfc->fullscreen)
 					{
+						POINT cursor = WINPR_C_ARRAY_INIT;
+
 						drag_mode = DRAG_NONE;
-						ReleaseCapture();
 						wf_toggle_fullscreen(floatbar->wfc);
+						ReleaseCapture();
+						if (GetCursorPos(&cursor))
+							PostMessage(floatbar->wfc->hwnd, WM_NCLBUTTONDOWN, (WPARAM)HTCAPTION,
+							            MAKELPARAM(cursor.x, cursor.y));
 						break;
 					}
 
+					/* Otherwise the bar slides horizontally across this display. */
 					const int xScreen = floatbar_parent_width(floatbar);
 					floatbar->rect.left = floatbar->rect.left + pos_x - btn_dwn_x;
 
@@ -861,16 +963,19 @@ static BOOL floatbar_window_create(wfFloatBar* floatbar)
 {
 	WNDCLASSEX wnd_cls;
 	HWND barWnd;
-	RECT rect;
+	RECT rect = WINPR_C_ARRAY_INIT;
 	LONG x;
 
 	if (!floatbar)
 		return FALSE;
 
-	if (!GetWindowRect(floatbar->parent, &rect))
+	/* Child coordinates are relative to the parent client area, not the screen. */
+	if (!GetClientRect(floatbar->parent, &rect))
 		return FALSE;
 
-	x = (rect.right - rect.left - BACKGROUND_W) / 2;
+	x = (rect.right - rect.left - floatbar_scale(floatbar, BACKGROUND_W)) / 2;
+	if (x < 0)
+		x = 0;
 	wnd_cls.cbSize = sizeof(WNDCLASSEX);
 	wnd_cls.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC | CS_DBLCLKS;
 	wnd_cls.lpfnWndProc = floatbar_proc;
@@ -884,9 +989,10 @@ static BOOL floatbar_window_create(wfFloatBar* floatbar)
 	wnd_cls.hInstance = floatbar->root_window;
 	wnd_cls.hIconSm = LoadIcon(nullptr, IDI_APPLICATION);
 	RegisterClassEx(&wnd_cls);
-	barWnd =
-	    CreateWindowEx(WS_EX_TOPMOST, L"floatbar", L"floatbar", WS_CHILD, x, 0, BACKGROUND_W,
-	                   BACKGROUND_H, floatbar->parent, nullptr, floatbar->root_window, floatbar);
+	barWnd = CreateWindowEx(WS_EX_TOPMOST, L"floatbar", L"floatbar", WS_CHILD, x, 0,
+	                        floatbar_scale(floatbar, BACKGROUND_W),
+	                        floatbar_scale(floatbar, BACKGROUND_H), floatbar->parent, nullptr,
+	                        floatbar->root_window, floatbar);
 
 	if (barWnd == nullptr)
 		return FALSE;
@@ -921,6 +1027,13 @@ wfFloatBar* wf_floatbar_new(wfContext* wfc, HINSTANCE window, DWORD flags)
 
 	floatbar->root_window = window;
 	floatbar->flags = flags;
+	floatbar->zoom = 100;
+	{
+		const UINT32 scale =
+		    freerdp_settings_get_uint32(wfc->common.context.settings, FreeRDP_DesktopScaleFactor);
+		if (scale >= 100)
+			floatbar->zoom = scale;
+	}
 	floatbar->wfc = wfc;
 	floatbar->locked = (flags & 0x0002) != 0;
 	floatbar->shown = (flags & 0x0006) != 0; /* If it is loked or shown show it */
@@ -991,6 +1104,27 @@ BOOL wf_floatbar_toggle_fullscreen(wfFloatBar* floatbar, BOOL fullscreen)
 	}
 
 	return TRUE;
+}
+
+/* Re-apply a new session scale: resize the bar, its controls and centre it again. */
+BOOL wf_floatbar_set_scale(wfFloatBar* floatbar, UINT32 zoom)
+{
+	if (!floatbar || (zoom < 100))
+		return FALSE;
+
+	if (floatbar->zoom != zoom)
+	{
+		floatbar->zoom = zoom;
+		floatbar->width = floatbar_scale(floatbar, BACKGROUND_W);
+		floatbar->height = floatbar_scale(floatbar, BACKGROUND_H);
+
+		if (!floatbar_update_layout(floatbar))
+			return FALSE;
+		if (!floatbar_update_region(floatbar))
+			return FALSE;
+	}
+
+	return wf_floatbar_reset_position(floatbar);
 }
 
 BOOL wf_floatbar_reset_position(wfFloatBar* floatbar)

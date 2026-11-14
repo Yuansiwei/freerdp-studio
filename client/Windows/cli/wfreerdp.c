@@ -42,6 +42,14 @@
 
 INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
+	/* Use physical pixels on high-DPI displays and when moving between monitors. */
+	typedef BOOL(WINAPI* StudioSetDpiContext)(HANDLE);
+	HMODULE studioUser32 = GetModuleHandleW(L"user32.dll");
+	StudioSetDpiContext studioSetDpi = (StudioSetDpiContext)GetProcAddress(studioUser32, "SetProcessDpiAwarenessContext");
+	if (studioSetDpi)
+		studioSetDpi((HANDLE)(LONG_PTR)-4);
+	else
+		SetProcessDPIAware();
 	int status;
 	HANDLE thread;
 	wfContext* wfc;
@@ -111,6 +119,11 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	}
 
 	AddDefaultSettings(settings);
+
+	/* Name the window and its input endpoint after the host only. */
+	const char* inputHost = freerdp_settings_get_string(settings, FreeRDP_ServerHostname);
+	if (!inputHost || !freerdp_settings_set_string(settings, FreeRDP_WindowTitle, inputHost))
+		goto out;
 
 	if (freerdp_client_start(context) != 0)
 		goto out;
