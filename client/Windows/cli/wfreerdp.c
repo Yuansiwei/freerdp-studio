@@ -147,6 +147,9 @@ typedef struct
 {
 	char host[256];
 	UINT32 port;
+	char user[256];
+	char password[256];
+	BOOL remember;
 } StudioConnect;
 
 static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -203,6 +206,13 @@ static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, 
 
 					strncpy_s(state->host, sizeof(state->host), text, sizeof(state->host) - 1);
 					state->port = (port > 0 && port <= 65535) ? port : STUDIO_DEFAULT_PORT;
+
+					GetDlgItemTextA(hDlg, IDC_STUDIO_USER, state->user, sizeof(state->user));
+					GetDlgItemTextA(hDlg, IDC_STUDIO_PASSWORD, state->password,
+					                sizeof(state->password));
+					state->remember =
+					    IsDlgButtonChecked(hDlg, IDC_STUDIO_REMEMBER) == BST_CHECKED;
+
 					EndDialog(hDlg, IDOK);
 					return TRUE;
 				}
@@ -276,6 +286,7 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	char** effectiveArgv = nullptr;
 	int effectiveArgc = 0;
 	char* injected = nullptr;
+	StudioConnect target = WINPR_C_ARRAY_INIT;
 
 	WINPR_UNUSED(hInstance);
 	WINPR_UNUSED(hPrevInstance);
@@ -331,7 +342,6 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 	if (!studio_has_target(argc, argv))
 	{
-		StudioConnect target = WINPR_C_ARRAY_INIT;
 		char entry[512] = WINPR_C_ARRAY_INIT;
 		char history[512] = WINPR_C_ARRAY_INIT;
 
@@ -377,6 +387,20 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	}
 
 	AddDefaultSettings(settings);
+
+	/* Credentials typed into the connect dialog win over the credential manager. */
+	if (target.user[0])
+	{
+		if (!freerdp_settings_set_string(settings, FreeRDP_Username, target.user))
+			goto out;
+	}
+
+	if (target.password[0])
+	{
+		if (!freerdp_settings_set_string(settings, FreeRDP_Password, target.password))
+			goto out;
+		wfc->studioSaveCredentials = target.remember;
+	}
 
 	/* Name the window and its input endpoint after the host only. */
 	const char* inputHost = freerdp_settings_get_string(settings, FreeRDP_ServerHostname);
