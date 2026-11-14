@@ -50,7 +50,7 @@ internal static class StudioRdp
         int port = DefaultPort;
         string user = null;
         int scale = 0;
-        int attempts = 3;
+        int attempts = 1;
 
         for (int i = 0; i < args.Length; i++)
         {
