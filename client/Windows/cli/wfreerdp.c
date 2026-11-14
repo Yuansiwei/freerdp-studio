@@ -39,6 +39,217 @@
 #include <wf_defaults.h>
 
 #include <shellapi.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define STUDIO_DEFAULT_PORT 3389
+#define STUDIO_HISTORY_MAX 10
+
+static void studio_history_path(char* path, size_t len)
+{
+	const char* base = getenv("LOCALAPPDATA");
+	if (!base || !base[0])
+		base = getenv("USERPROFILE");
+
+	if (!base || !base[0])
+	{
+		wcsncpy_s((wchar_t*)path, len, L"", 0);
+		path[0] = '\0';
+		return;
+	}
+
+	(void)snprintf(path, len, "%s\\FreeRDP\\servers.txt", base);
+}
+
+static void studio_history_load(HWND combo)
+{
+	char path[MAX_PATH * 2] = WINPR_C_ARRAY_INIT;
+	char line[512] = WINPR_C_ARRAY_INIT;
+	FILE* fp = nullptr;
+
+	studio_history_path(path, sizeof(path));
+	if (path[0] == '\0')
+		return;
+
+	fp = fopen(path, "rb");
+	if (!fp)
+		return;
+
+	while (fgets(line, sizeof(line), fp))
+	{
+		size_t n = strcspn(line, "\r\n");
+		line[n] = '\0';
+		if (line[0] == '\0')
+			continue;
+		SendMessageA(combo, CB_ADDSTRING, 0, (LPARAM)line);
+	}
+
+	fclose(fp);
+	if (SendMessageA(combo, CB_GETCOUNT, 0, 0) > 0)
+		SendMessageA(combo, CB_SETCURSEL, 0, 0);
+}
+
+static void studio_history_save(const char* value)
+{
+	char path[MAX_PATH * 2] = WINPR_C_ARRAY_INIT;
+	char existing[STUDIO_HISTORY_MAX][512];
+	size_t count = 0;
+	FILE* fp = nullptr;
+
+	if (!value || !value[0])
+		return;
+
+	studio_history_path(path, sizeof(path));
+	if (path[0] == '\0')
+		return;
+
+	if (strstr(path, "\\FreeRDP\\"))
+	{
+		char dir[MAX_PATH * 2] = WINPR_C_ARRAY_INIT;
+		strncpy_s(dir, sizeof(dir), path, sizeof(dir) - 1);
+		char* slash = strrchr(dir, '\\');
+		if (slash)
+		{
+			*slash = '\0';
+			(void)SHCreateDirectoryExA(nullptr, dir, nullptr);
+		}
+	}
+
+	fp = fopen(path, "rb");
+	if (fp)
+	{
+		char line[512] = WINPR_C_ARRAY_INIT;
+		while (count < STUDIO_HISTORY_MAX && fgets(line, sizeof(line), fp))
+		{
+			size_t n = strcspn(line, "\r\n");
+			line[n] = '\0';
+			if (line[0] == '\0' || _stricmp(line, value) == 0)
+				continue;
+			strncpy_s(existing[count], sizeof(existing[count]), line, sizeof(existing[count]) - 1);
+			count++;
+		}
+		fclose(fp);
+	}
+
+	fp = fopen(path, "wb");
+	if (!fp)
+		return;
+
+	fprintf(fp, "%s\r\n", value);
+	for (size_t x = 0; x < count; x++)
+		fprintf(fp, "%s\r\n", existing[x]);
+
+	fclose(fp);
+}
+
+typedef struct
+{
+	char host[256];
+	UINT32 port;
+} StudioConnect;
+
+static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	StudioConnect* state = (StudioConnect*)GetWindowLongPtrA(hDlg, GWLP_USERDATA);
+
+	switch (msg)
+	{
+		case WM_INITDIALOG:
+			state = (StudioConnect*)lParam;
+			SetWindowLongPtrA(hDlg, GWLP_USERDATA, (LONG_PTR)state);
+			{
+				HWND combo = GetDlgItem(hDlg, IDC_STUDIO_SERVER);
+				studio_history_load(combo);
+				if (SendMessageA(combo, CB_GETCOUNT, 0, 0) == 0)
+					SetDlgItemTextA(hDlg, IDC_STUDIO_SERVER, "192.168.98.184");
+				SendMessageA(combo, CB_SETEDITSEL, 0, MAKELPARAM(0, -1));
+				SetFocus(combo);
+			}
+			return FALSE;
+		case WM_COMMAND:
+			switch (LOWORD(wParam))
+			{
+				case IDOK:
+				{
+					char buffer[512] = WINPR_C_ARRAY_INIT;
+					GetDlgItemTextA(hDlg, IDC_STUDIO_SERVER, buffer, sizeof(buffer));
+
+					char* text = buffer;
+					while (*text == ' ')
+						text++;
+					char* end = text + strlen(text);
+					while (end > text && (end[-1] == ' ' || end[-1] == '\r' || end[-1] == '\n'))
+						end--;
+					*end = '\0';
+
+					if (*text == '\0')
+						return TRUE;
+
+					UINT32 port = STUDIO_DEFAULT_PORT;
+					char* colon = strrchr(text, ':');
+					if (colon && colon[1] != '\0')
+					{
+						BOOL digits = TRUE;
+						for (const char* p = colon + 1; *p; p++)
+							if (*p < '0' || *p > '9')
+								digits = FALSE;
+						if (digits)
+						{
+							port = (UINT32)strtoul(colon + 1, nullptr, 10);
+							*colon = '\0';
+						}
+					}
+
+					strncpy_s(state->host, sizeof(state->host), text, sizeof(state->host) - 1);
+					state->port = (port > 0 && port <= 65535) ? port : STUDIO_DEFAULT_PORT;
+					EndDialog(hDlg, IDOK);
+					return TRUE;
+				}
+				case IDCANCEL:
+					EndDialog(hDlg, IDCANCEL);
+					return TRUE;
+				default:
+					break;
+			}
+			break;
+		default:
+			break;
+	}
+	return FALSE;
+}
+
+/* Returns TRUE when the dialog was confirmed and state holds a target. */
+static BOOL studio_ask_server(StudioConnect* state)
+{
+	state->port = STUDIO_DEFAULT_PORT;
+	INT_PTR result = DialogBoxParamA(GetModuleHandle(nullptr), MAKEINTRESOURCEA(IDD_STUDIO_CONNECT),
+	                                 nullptr, studio_connect_proc, (LPARAM)state);
+	return (result == IDOK) && (state->host[0] != '\0');
+}
+
+/* TRUE when the command line already names a target. */
+static BOOL studio_has_target(int argc, char** argv)
+{
+	for (int i = 1; i < argc; i++)
+	{
+		const char* a = argv[i];
+		if (!a)
+			continue;
+
+		if (a[0] == '/' || a[0] == '-')
+		{
+			const char* v = a + 1;
+			if (_strnicmp(v, "v:", 2) == 0)
+				return TRUE;
+			if (_stricmp(v, "v") == 0)
+				return TRUE;
+		}
+		else if (strlen(a) > 4 && _stricmp(a + strlen(a) - 4, ".rdp") == 0)
+			return TRUE;
+	}
+	return FALSE;
+}
 
 INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
@@ -62,6 +273,9 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	int ret = 1;
 	int argc = 0;
 	LPWSTR* args = nullptr;
+	char** effectiveArgv = nullptr;
+	int effectiveArgc = 0;
+	char* injected = nullptr;
 
 	WINPR_UNUSED(hInstance);
 	WINPR_UNUSED(hPrevInstance);
@@ -111,7 +325,51 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	if (!settings || !wfc)
 		goto out;
 
-	status = freerdp_client_settings_parse_command_line(settings, argc, argv, FALSE);
+	/* Ask for a target when the command line does not name one. */
+	effectiveArgv = argv;
+	effectiveArgc = argc;
+
+	if (!studio_has_target(argc, argv))
+	{
+		StudioConnect target = WINPR_C_ARRAY_INIT;
+		char entry[512] = WINPR_C_ARRAY_INIT;
+		char history[512] = WINPR_C_ARRAY_INIT;
+
+		if (!studio_ask_server(&target))
+		{
+			ret = 0;
+			goto out;
+		}
+
+		if (target.port == STUDIO_DEFAULT_PORT)
+		{
+			(void)snprintf(entry, sizeof(entry), "/v:%s", target.host);
+			(void)snprintf(history, sizeof(history), "%s", target.host);
+		}
+		else
+		{
+			(void)snprintf(entry, sizeof(entry), "/v:%s:%u", target.host, target.port);
+			(void)snprintf(history, sizeof(history), "%s:%u", target.host, target.port);
+		}
+
+		injected = _strdup(entry);
+		if (!injected)
+			goto out;
+
+		studio_history_save(history);
+
+		effectiveArgv = calloc((size_t)argc + 1, sizeof(char*));
+		if (!effectiveArgv)
+			goto out;
+
+		for (int i = 0; i < argc; i++)
+			effectiveArgv[i] = argv[i];
+
+		effectiveArgv[argc] = injected;
+		effectiveArgc = argc + 1;
+	}
+
+	status = freerdp_client_settings_parse_command_line(settings, effectiveArgc, effectiveArgv, FALSE);
 	if (status)
 	{
 		ret = freerdp_client_settings_command_line_status_print(settings, status, argc, argv);
@@ -144,6 +402,11 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 out:
 	freerdp_client_context_free(context);
+
+	if (effectiveArgv && (effectiveArgv != argv))
+		free(effectiveArgv);
+
+	free(injected);
 
 	if (argv)
 	{
