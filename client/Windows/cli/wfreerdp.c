@@ -39,12 +39,51 @@
 #include <wf_defaults.h>
 
 #include <shellapi.h>
+#include <wincred.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define STUDIO_DEFAULT_PORT 3389
 #define STUDIO_HISTORY_MAX 10
+/* 读取 Windows 凭据管理器里已保存的登录信息，用于预填对话框。 */
+static void studio_prefill_credentials(HWND hDlg, const char* server)
+{
+	WCHAR target[512] = WINPR_C_ARRAY_INIT;
+	WCHAR* userW = nullptr;
+	WCHAR* passW = nullptr;
+	CREDENTIALW* cred = nullptr;
+
+	if (!server || !server[0])
+		return;
+
+	(void)swprintf_s(target, ARRAYSIZE(target), L"TERMSRV/%S", server);
+
+	if (!CredReadW(target, CRED_TYPE_DOMAIN_PASSWORD, 0, &cred) &&
+	    !CredReadW(target, CRED_TYPE_GENERIC, 0, &cred))
+		return;
+
+	if (cred)
+	{
+		if (cred->UserName && cred->UserName[0])
+			SetDlgItemTextW(hDlg, IDC_STUDIO_USER, cred->UserName);
+
+		if (cred->CredentialBlob && cred->CredentialBlobSize > 0)
+		{
+			const size_t chars = cred->CredentialBlobSize / sizeof(WCHAR);
+			passW = calloc(chars + 1, sizeof(WCHAR));
+			if (passW)
+			{
+				memcpy(passW, cred->CredentialBlob, cred->CredentialBlobSize);
+				SetDlgItemTextW(hDlg, IDC_STUDIO_PASSWORD, passW);
+				SecureZeroMemory(passW, (chars + 1) * sizeof(WCHAR));
+				free(passW);
+			}
+		}
+		CredFree(cred);
+	}
+	(void)userW;
+}
 
 static void studio_history_path(char* path, size_t len)
 {
@@ -176,6 +215,13 @@ static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, 
 						SendDlgItemMessageA(hDlg, IDC_STUDIO_TITLE, WM_SETFONT, (WPARAM)titleFont, TRUE);
 				}
 				SetFocus(combo);
+
+				/* 预填 Windows 凭据管理器里已保存的用户名与密码 */
+				{
+					char current[512] = WINPR_C_ARRAY_INIT;
+					GetDlgItemTextA(hDlg, IDC_STUDIO_SERVER, current, sizeof(current));
+					studio_prefill_credentials(hDlg, current);
+				}
 			}
 			return FALSE;
 		case WM_COMMAND:
