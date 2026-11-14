@@ -167,6 +167,14 @@ static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, 
 				if (SendMessageA(combo, CB_GETCOUNT, 0, 0) == 0)
 					SetDlgItemTextA(hDlg, IDC_STUDIO_SERVER, "192.168.98.184");
 				SendMessageA(combo, CB_SETEDITSEL, 0, MAKELPARAM(0, -1));
+				{
+					HFONT titleFont = CreateFontA(-15, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0,
+					                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+					                                CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+					                                DEFAULT_PITCH, "Segoe UI");
+					if (titleFont)
+						SendDlgItemMessageA(hDlg, IDC_STUDIO_TITLE, WM_SETFONT, (WPARAM)titleFont, TRUE);
+				}
 				SetFocus(combo);
 			}
 			return FALSE;
