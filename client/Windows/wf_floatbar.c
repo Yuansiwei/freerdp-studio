@@ -33,6 +33,7 @@
 
 /* TIMERs */
 #define TIMER_HIDE 1
+#define TIMER_DRAG 9
 #define TIMER_ANIMAT_SHOW 2
 #define TIMER_ANIMAT_HIDE 3
 
@@ -699,6 +700,7 @@ static LRESULT CALLBACK floatbar_proc(const HWND hWnd, const UINT Msg, const WPA
 	static int drag_mode = DRAG_NONE;
 	static int lbtn_dwn = FALSE;
 static Button* pressed_button = NULL;
+static int drag_move_count = 0;
 	static int btn_dwn_x = 0;
 	static int btn_dwn_y = 0;
 	static int btn_dwn_screen_x = 0;
@@ -780,7 +782,7 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 				pt.x = pos_x;
 				pt.y = pos_y;
 				ClientToScreen(hWnd, &pt);
-				SetCapture(hWnd);
+				/* 不使用鼠标捕获：捕获会立刻触发 WM_CAPTURECHANGED 把拖拽状态清掉 */
 				floatbar_kill_timers(floatbar);
 				drag_mode = floatbar_get_resize_mode(floatbar, pos_x, pos_y);
 				if (drag_mode == DRAG_NONE)
@@ -794,14 +796,18 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 				GetWindowRect(floatbar->wfc->hwnd, &drag_start_window);
 				drag_start_left = floatbar->rect.left;
 				drag_start_width = floatbar->width;
+				drag_move_count = 0;
+				SetTimer(hWnd, TIMER_DRAG, 15, nullptr);
 			}
 			else
 			{
+				drag_move_count = 0;
 				pressed_button = button;
 				lbtn_dwn = TRUE;
 			}
 
 		case WM_LBUTTONUP:
+			KillTimer(hWnd, TIMER_DRAG);
 			{
 				/* 消息可能来自主窗口转发，lParam 的 Y 不可信：一律用真实光标位置 */
 				POINT realPt = WINPR_C_ARRAY_INIT;
@@ -816,7 +822,6 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			pos_y = HIWORD(lParam);
 			const BOOL was_dragging = drag_mode != DRAG_NONE;
 			drag_mode = DRAG_NONE;
-			ReleaseCapture();
 			if (was_dragging)
 			{
 				/* Dropping the bar re-binds the session to the display it now covers. */
@@ -867,13 +872,13 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 					pos_y = realPt.y;
 				}
 			}
-			pos_x = LOWORD(lParam);
 
 			if (!floatbar->locked)
 				floatbar_animation(floatbar, TRUE);
 
 			if (drag_mode != DRAG_NONE)
 			{
+				drag_move_count++;
 				// Use screen pos during left-side resize to sync new position and avoid jittering.
 				pt.x = pos_x;
 				pt.y = pos_y;
@@ -981,7 +986,44 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 		case WM_TIMER:
 			switch (wParam)
 			{
-				case TIMER_HIDE:
+				case TIMER_DRAG:
+			{
+				POINT cp = WINPR_C_ARRAY_INIT;
+				if ((drag_mode != DRAG_NONE) && GetCursorPos(&cp))
+				{
+					ScreenToClient(hWnd, &cp);
+					pos_x = cp.x;
+					pos_y = cp.y;
+					drag_move_count++;
+					if (drag_mode == DRAG_MOVE)
+					{
+						const int dy = pos_y - btn_dwn_y;
+						const int threshold = floatbar->height * RESTORE_DRAG_BAR_MULTIPLIER;
+						if (dy > threshold && floatbar->wfc->fullscreen_toggle &&
+						    floatbar->wfc->fullscreen)
+						{
+							drag_mode = DRAG_NONE;
+							KillTimer(hWnd, TIMER_DRAG);
+							wf_toggle_fullscreen(floatbar->wfc);
+							ReleaseCapture();
+						}
+						else
+						{
+							const int span = floatbar_parent_width(floatbar);
+							floatbar->rect.left = floatbar->rect.left + pos_x - btn_dwn_x;
+							if (floatbar->rect.left < 0)
+								floatbar->rect.left = 0;
+							else if (floatbar->rect.left > span - floatbar->width)
+								floatbar->rect.left = span - floatbar->width;
+							MoveWindow(hWnd, floatbar->rect.left, 0, floatbar->width, floatbar->height,
+							           TRUE);
+						}
+					}
+				}
+				break;
+			}
+
+			case TIMER_HIDE:
 					floatbar_animation(floatbar, FALSE);
 					break;
 
