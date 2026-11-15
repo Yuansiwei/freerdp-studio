@@ -1,4 +1,4 @@
-﻿/**
+/**
  * FreeRDP: A Remote Desktop Protocol Implementation
  * Event Handling
  *
@@ -298,6 +298,9 @@ static DWORD WINAPI studio_paste_thread(LPVOID arg)
 			break;
 		/* 一律走 RDP 输入通道（后台可用）。 */
 		{
+			/* 失焦时客户端会把 SuspendInput 置 TRUE，每批都要重新清掉，否则事件被静默丢弃 */
+			(void)freerdp_settings_set_bool(job->wfc->common.context.settings, FreeRDP_SuspendInput,
+			                                FALSE);
 			const ULONGLONG b0 = GetTickCount64();
 			const BOOL ok = studio_send_text_events(&job->wfc->common.context, job->text + pos, take);
 			const ULONGLONG b1 = GetTickCount64();
