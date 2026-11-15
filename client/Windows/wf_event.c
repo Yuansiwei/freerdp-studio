@@ -59,6 +59,16 @@ static BOOL g_remoteCopied = FALSE;
 /* 上次看到的本机剪贴板序列号，用来判断本机有没有新的复制 */
 static DWORD g_lastClipSeq = 0;
 
+/* 定时器驱动的逐字粘贴：主线程不再被 Sleep 阻塞 */
+#define STUDIO_PASTE_TIMER ((UINT_PTR)0x53545031)
+#define STUDIO_PASTE_TICK_MS 10
+#define STUDIO_PASTE_PER_TICK 10
+static WCHAR* g_pasteText = NULL;
+static size_t g_pasteLen = 0;
+static size_t g_pastePos = 0;
+static BOOL g_pasteWasSuspended = FALSE;
+static ULONGLONG g_pasteStart = 0;
+
 static BOOL wf_scale_blt(wfContext* wfc, HDC hdc, int x, int y, int w, int h, HDC hdcSrc, int x1,
                          int y1, DWORD rop);
 static BOOL wf_scale_mouse_event(wfContext* wfc, UINT16 flags, INT32 x, INT32 y);
@@ -818,39 +828,60 @@ LRESULT CALLBACK wf_event_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam
 				WCHAR* typed = (WCHAR*)lParam;
 				if (typed)
 				{
-					const size_t typedLen = wcslen(typed);
-					studioTypingJob* job = (studioTypingJob*)calloc(1, sizeof(studioTypingJob));
+					free(g_pasteText);
+					g_pasteText = typed;
+					g_pasteLen = wcslen(typed);
+					g_pastePos = 0;
+					g_pasteStart = GetTickCount64();
+					g_pasteWasSuspended =
+					    freerdp_settings_get_bool(wfc->common.context.settings, FreeRDP_SuspendInput);
+					(void)freerdp_settings_set_bool(wfc->common.context.settings, FreeRDP_SuspendInput,
+					                                FALSE);
 
-					studio_paste_log("HANDLER len=%zu", typedLen);
+					/* 先补发修饰键 release，避免远端残留 Ctrl/Shift/Alt */
+					freerdp_input_send_keyboard_event_ex(wfc->common.context.input, FALSE, FALSE, 0x1D);
+					freerdp_input_send_keyboard_event_ex(wfc->common.context.input, FALSE, FALSE, 0x2A);
+					freerdp_input_send_keyboard_event_ex(wfc->common.context.input, FALSE, FALSE, 0x38);
 
-					if (job)
-					{
-						const char* delayEnv = getenv("STUDIO_TYPE_DELAY");
-						HANDLE thread = NULL;
-
-						job->wfc = wfc;
-						job->text = (WCHAR*)malloc((typedLen + 1) * sizeof(WCHAR));
-						if (job->text)
-						{
-							memcpy(job->text, typed, (typedLen + 1) * sizeof(WCHAR));
-							job->length = typedLen;
-							job->delayMs =
-							    (delayEnv && delayEnv[0]) ? (unsigned)strtoul(delayEnv, NULL, 10) : 8;
-							thread = CreateThread(NULL, 0, studio_typing_thread, job, 0, NULL);
-						}
-						if (!thread)
-						{
-							free(job->text);
-							free(job);
-						}
-						else
-							CloseHandle(thread);
-					}
-
-					free(typed);
+					studio_paste_log("PASTE_START len=%zu suspended=%d", g_pasteLen,
+					                 (int)g_pasteWasSuspended);
+					SetTimer(wfc->hwnd, STUDIO_PASTE_TIMER, STUDIO_PASTE_TICK_MS, NULL);
 				}
 				break;
 			}
+
+			case WM_TIMER:
+				if (wParam == STUDIO_PASTE_TIMER)
+				{
+					if (!g_pasteText || g_pastePos >= g_pasteLen)
+					{
+						KillTimer(wfc->hwnd, STUDIO_PASTE_TIMER);
+						if (g_pasteText)
+						{
+							const ULONGLONG elapsed = GetTickCount64() - g_pasteStart;
+							studio_paste_log("PASTE_DONE len=%zu elapsedMs=%llu rate=%.0f cps", g_pasteLen,
+							                 (unsigned long long)elapsed,
+							                 (elapsed > 0) ? (double)g_pasteLen * 1000.0 / (double)elapsed
+							                              : 0.0);
+							free(g_pasteText);
+							g_pasteText = NULL;
+							g_pasteLen = 0;
+							g_pastePos = 0;
+							(void)freerdp_settings_set_bool(wfc->common.context.settings,
+							                                FreeRDP_SuspendInput, g_pasteWasSuspended);
+						}
+						break;
+					}
+
+					{
+						size_t remaining = g_pasteLen - g_pastePos;
+						size_t take = (remaining < STUDIO_PASTE_PER_TICK) ? remaining : STUDIO_PASTE_PER_TICK;
+						studio_send_text_events(&wfc->common.context, g_pasteText + g_pastePos, take);
+						g_pastePos += take;
+					}
+					break;
+				}
+				break;
 			case WM_MOVE:
 				if (!wfc->disablewindowtracking)
 				{

@@ -1,4 +1,4 @@
-/* Local, explicit input endpoint for this FreeRDP connection. */
+﻿/* Local, explicit input endpoint for this FreeRDP connection. */
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <string.h>
@@ -51,26 +51,13 @@ static BOOL studio_type_char(rdpContext* context, WCHAR ch)
 	return TRUE;
 }
 
-/* 把一段文本敲进去：可映射的字符用扫描码按键，其余退回 unicode 事件。 */
+/* 发送一段文本的键盘事件。节流由调用方（定时器）负责，本函数不做任何 Sleep。 */
 static BOOL studio_send_text_events(rdpContext* context, const WCHAR* chars, size_t count)
 {
 	BOOL success = TRUE;
-	unsigned long pasteChunk = 32;
-	unsigned long pasteDelay = 10;
 
 	if (!context || !context->input || !chars)
 		return FALSE;
-
-	{
-		const char* chunkEnv = getenv("STUDIO_PASTE_CHUNK");
-		const char* delayEnv = getenv("STUDIO_PASTE_DELAY");
-		if (chunkEnv && chunkEnv[0])
-			pasteChunk = strtoul(chunkEnv, NULL, 10);
-		if (delayEnv && delayEnv[0])
-			pasteDelay = strtoul(delayEnv, NULL, 10);
-		if (pasteChunk == 0)
-			pasteChunk = 32;
-	}
 
 	for (size_t i = 0; i < count && success; i++)
 	{
@@ -81,9 +68,6 @@ static BOOL studio_send_text_events(rdpContext* context, const WCHAR* chars, siz
 			    freerdp_input_send_unicode_keyboard_event(context->input, KBD_FLAGS_RELEASE, chars[i]);
 			success = down && up;
 		}
-
-		if ((i % pasteChunk) == (pasteChunk - 1))
-			Sleep(pasteDelay);
 	}
 
 	return success;
