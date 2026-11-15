@@ -513,15 +513,36 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 		studio_history_save(history);
 
-		effectiveArgv = calloc((size_t)argc + 1, sizeof(char*));
-		if (!effectiveArgv)
-			goto out;
+		/* 对话框启动时补上默认参数，避免退化成 1024x768 且没有动态分辨率。 */
+		{
+			static const char* const defaults[] = { "/f",             "+toggle-fullscreen",
+			                                        "+dynamic-resolution", "+auto-reconnect",
+			                                        "/gdi:sw",        "/bpp:32",
+			                                        "/kbd:unicode:on", "/cert:ignore",
+			                                        "/log-level:WARN" };
+			const size_t extra = ARRAYSIZE(defaults);
+			size_t added = 0;
 
-		for (int i = 0; i < argc; i++)
-			effectiveArgv[i] = argv[i];
+			effectiveArgv = calloc((size_t)argc + 1 + extra, sizeof(char*));
+			if (!effectiveArgv)
+				goto out;
 
-		effectiveArgv[argc] = injected;
-		effectiveArgc = argc + 1;
+			for (int i = 0; i < argc; i++)
+				effectiveArgv[i] = argv[i];
+
+			effectiveArgv[argc] = injected;
+			added = 1;
+
+			for (size_t d = 0; d < extra; d++)
+			{
+				effectiveArgv[argc + 1 + d] = _strdup(defaults[d]);
+				if (!effectiveArgv[argc + 1 + d])
+					break;
+				added++;
+			}
+
+			effectiveArgc = argc + (int)added;
+		}
 	}
 
 	status = freerdp_client_settings_parse_command_line(settings, effectiveArgc, effectiveArgv, FALSE);
