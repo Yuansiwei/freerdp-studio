@@ -1,4 +1,4 @@
-/**
+﻿/**
  * FreeRDP: A Remote Desktop Protocol Implementation
  * Event Handling
  *
@@ -37,6 +37,9 @@
 
 #include <windowsx.h>
 
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
+
 #include "studio_input.h"
 #include "wf_cliprdr.h"
 
@@ -61,7 +64,7 @@ static DWORD g_lastClipSeq = 0;
 
 /* 定时器驱动的逐字粘贴：主线程不再被 Sleep 阻塞 */
 #define STUDIO_PASTE_TIMER ((UINT_PTR)0x53545031)
-#define STUDIO_PASTE_TICK_MS 10
+#define STUDIO_PASTE_TICK_MS 5
 #define STUDIO_PASTE_PER_TICK 10
 static WCHAR* g_pasteText = NULL;
 static size_t g_pasteLen = 0;
@@ -261,6 +264,72 @@ static DWORD WINAPI studio_typing_thread(LPVOID arg)
 
 done:
 	studio_paste_log("SENDINPUT_TYPED: sent=%zu of %zu", i, job->length);
+	free(job->text);
+	free(job);
+	return 0;
+}
+static volatile LONG g_pasteCancel = 0;
+
+typedef struct
+{
+	wfContext* wfc;
+	WCHAR* text;
+	size_t length;
+	BOOL wasSuspended;
+} studioPasteJob;
+
+static DWORD WINAPI studio_paste_thread(LPVOID arg)
+{
+	studioPasteJob* job = (studioPasteJob*)arg;
+	size_t pos = 0;
+	const ULONGLONG start = GetTickCount64();
+
+	if (!job)
+		return 0;
+
+	timeBeginPeriod(1);
+
+	unsigned long perTick = STUDIO_PASTE_PER_TICK;
+	unsigned long tickMs = 5;
+	{
+		const char* e1 = getenv("STUDIO_PASTE_PER_TICK");
+		const char* e2 = getenv("STUDIO_PASTE_TICK_MS");
+		if (e1 && e1[0])
+			perTick = strtoul(e1, NULL, 10);
+		if (e2 && e2[0])
+			tickMs = strtoul(e2, NULL, 10);
+		if (perTick == 0)
+			perTick = 10;
+	}
+
+	while (pos < job->length)
+	{
+		const size_t remaining = job->length - pos;
+		const size_t take = (remaining < perTick) ? remaining : perTick;
+
+		if (g_pasteCancel)
+			break;
+		if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0)
+			break;
+
+		studio_send_text_events(&job->wfc->common.context, job->text + pos, take);
+		pos += take;
+
+		Sleep(tickMs);
+	}
+
+	timeEndPeriod(1);
+
+	{
+		const ULONGLONG elapsed = GetTickCount64() - start;
+		studio_paste_log("PASTE_%s len=%zu sent=%zu elapsedMs=%llu rate=%.0f cps",
+		                 g_pasteCancel ? "CANCELLED" : "DONE", job->length, pos,
+		                 (unsigned long long)elapsed,
+		                 (elapsed > 0) ? (double)pos * 1000.0 / (double)elapsed : 0.0);
+	}
+
+	(void)freerdp_settings_set_bool(job->wfc->common.context.settings, FreeRDP_SuspendInput,
+	                                job->wasSuspended);
 	free(job->text);
 	free(job);
 	return 0;
@@ -828,82 +897,43 @@ LRESULT CALLBACK wf_event_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam
 				WCHAR* typed = (WCHAR*)lParam;
 				if (typed)
 				{
-					if (g_pasteText && (g_pastePos < g_pasteLen))
+					studioPasteJob* job = (studioPasteJob*)calloc(1, sizeof(studioPasteJob));
+					HANDLE thread = NULL;
+
+					if (job)
 					{
-						studio_paste_log("PASTE_IGNORED: previous paste still running (%zu/%zu)", g_pastePos,
-						                 g_pasteLen);
-						free(typed);
-						break;
+						job->wfc = wfc;
+						job->text = typed;
+						job->length = wcslen(typed);
+						job->wasSuspended =
+						    freerdp_settings_get_bool(wfc->common.context.settings, FreeRDP_SuspendInput);
+
+						(void)freerdp_settings_set_bool(wfc->common.context.settings, FreeRDP_SuspendInput,
+						                                FALSE);
+						freerdp_input_send_keyboard_event_ex(wfc->common.context.input, FALSE, FALSE, 0x1D);
+						freerdp_input_send_keyboard_event_ex(wfc->common.context.input, FALSE, FALSE, 0x2A);
+						freerdp_input_send_keyboard_event_ex(wfc->common.context.input, FALSE, FALSE, 0x38);
+
+						g_pasteCancel = 0;
+						studio_paste_log("PASTE_START len=%zu suspended=%d", job->length,
+						                 (int)job->wasSuspended);
+						thread = CreateThread(NULL, 0, studio_paste_thread, job, 0, NULL);
 					}
 
-					free(g_pasteText);
-					g_pasteText = typed;
-					g_pasteLen = wcslen(typed);
-					g_pastePos = 0;
-					g_pasteStart = GetTickCount64();
-					g_pasteWasSuspended =
-					    freerdp_settings_get_bool(wfc->common.context.settings, FreeRDP_SuspendInput);
-					(void)freerdp_settings_set_bool(wfc->common.context.settings, FreeRDP_SuspendInput,
-					                                FALSE);
-
-					/* 先补发修饰键 release，避免远端残留 Ctrl/Shift/Alt */
-					freerdp_input_send_keyboard_event_ex(wfc->common.context.input, FALSE, FALSE, 0x1D);
-					freerdp_input_send_keyboard_event_ex(wfc->common.context.input, FALSE, FALSE, 0x2A);
-					freerdp_input_send_keyboard_event_ex(wfc->common.context.input, FALSE, FALSE, 0x38);
-
-					studio_paste_log("PASTE_START len=%zu suspended=%d", g_pasteLen,
-					                 (int)g_pasteWasSuspended);
-					SetTimer(wfc->hwnd, STUDIO_PASTE_TIMER, STUDIO_PASTE_TICK_MS, NULL);
+					if (!thread)
+					{
+						if (job)
+						{
+							free(job);
+						}
+						free(typed);
+					}
+					else
+						CloseHandle(thread);
 				}
 				break;
 			}
 
-			case WM_TIMER:
-				if (wParam == STUDIO_PASTE_TIMER)
-				/* Esc 立即中止正在进行的粘贴 */
-				if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) && g_pasteText)
-				{
-					KillTimer(wfc->hwnd, STUDIO_PASTE_TIMER);
-					studio_paste_log("PASTE_CANCELLED at %zu/%zu", g_pastePos, g_pasteLen);
-					free(g_pasteText);
-					g_pasteText = NULL;
-					g_pasteLen = 0;
-					g_pastePos = 0;
-					(void)freerdp_settings_set_bool(wfc->common.context.settings,
-					                                FreeRDP_SuspendInput, g_pasteWasSuspended);
-					break;
-				}
-
-				{
-					if (!g_pasteText || g_pastePos >= g_pasteLen)
-					{
-						KillTimer(wfc->hwnd, STUDIO_PASTE_TIMER);
-						if (g_pasteText)
-						{
-							const ULONGLONG elapsed = GetTickCount64() - g_pasteStart;
-							studio_paste_log("PASTE_DONE len=%zu elapsedMs=%llu rate=%.0f cps", g_pasteLen,
-							                 (unsigned long long)elapsed,
-							                 (elapsed > 0) ? (double)g_pasteLen * 1000.0 / (double)elapsed
-							                              : 0.0);
-							free(g_pasteText);
-							g_pasteText = NULL;
-							g_pasteLen = 0;
-							g_pastePos = 0;
-							(void)freerdp_settings_set_bool(wfc->common.context.settings,
-							                                FreeRDP_SuspendInput, g_pasteWasSuspended);
-						}
-						break;
-					}
-
-					{
-						size_t remaining = g_pasteLen - g_pastePos;
-						size_t take = (remaining < STUDIO_PASTE_PER_TICK) ? remaining : STUDIO_PASTE_PER_TICK;
-						studio_send_text_events(&wfc->common.context, g_pasteText + g_pastePos, take);
-						g_pastePos += take;
-					}
-					break;
-				}
-				break;
 			case WM_MOVE:
 				if (!wfc->disablewindowtracking)
 				{
