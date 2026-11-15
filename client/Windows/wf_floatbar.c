@@ -672,6 +672,7 @@ static LRESULT CALLBACK floatbar_proc(const HWND hWnd, const UINT Msg, const WPA
 {
 	static int drag_mode = DRAG_NONE;
 	static int lbtn_dwn = FALSE;
+static Button* pressed_button = NULL;
 	static int btn_dwn_x = 0;
 	static int btn_dwn_y = 0;
 	static int btn_dwn_screen_x = 0;
@@ -758,9 +759,10 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 				drag_start_width = floatbar->width;
 			}
 			else
+			{
+				pressed_button = button;
 				lbtn_dwn = TRUE;
-
-			break;
+			}
 
 		case WM_LBUTTONUP:
 			pos_x = LOWORD(lParam);
@@ -778,13 +780,13 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 
 			if (lbtn_dwn)
 			{
-				button = floatbar_get_button(floatbar, pos_x, pos_y);
+				if (pressed_button)
+					button_hit(pressed_button);
 
-				if (button)
-					button_hit(button);
-
+				pressed_button = NULL;
 				lbtn_dwn = FALSE;
 			}
+
 
 			break;
 
