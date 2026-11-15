@@ -797,7 +797,11 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 				drag_start_left = floatbar->rect.left;
 				drag_start_width = floatbar->width;
 				drag_move_count = 0;
-				SetTimer(hWnd, TIMER_DRAG, 15, nullptr);
+				{
+					const UINT_PTR dragTimerId = SetTimer(hWnd, TIMER_DRAG, 15, nullptr);
+					floatbar_log("SETTIMER_DRAG id=%llu err=%lu", (unsigned long long)dragTimerId,
+					             (unsigned long)GetLastError());
+				}
 			}
 			else
 			{
@@ -959,6 +963,20 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			drag_mode = DRAG_NONE;
 			break;
 
+		case WM_NCHITTEST:
+		{
+			/* 按钮以外区域交给系统当标题栏处理：原生拖动，不依赖鼠标消息/定时器 */
+			const int sx = (int)(short)LOWORD(lParam);
+			const int sy = (int)(short)HIWORD(lParam);
+			POINT hit = WINPR_C_ARRAY_INIT;
+			hit.x = sx;
+			hit.y = sy;
+			ScreenToClient(hWnd, &hit);
+			if (floatbar_get_button(floatbar, hit.x, hit.y) == nullptr)
+				return HTCAPTION;
+			return HTCLIENT;
+		}
+
 		case WM_SETCURSOR:
 			if (LOWORD(lParam) == HTCLIENT)
 			{
@@ -984,6 +1002,14 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 		}
 
 		case WM_TIMER:
+			{
+				static int timerLogs = 0;
+				if (timerLogs < 20)
+				{
+					timerLogs++;
+					floatbar_log("WM_TIMER wParam=%llu", (unsigned long long)wParam);
+				}
+			}
 			switch (wParam)
 			{
 				case TIMER_DRAG:
