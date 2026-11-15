@@ -1,25 +1,89 @@
-﻿/* Local, explicit input endpoint for this FreeRDP connection. */
+/* Local, explicit input endpoint for this FreeRDP connection. */
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <string.h>
 
-/* 把一段文本敲进去（unicode 键盘事件，与 --text 注入完全同一条路径）。 */
+/* 用扫描码敲一个字符（与物理键盘完全一致）。返回 FALSE 表示该字符无法映射。 */
+static BOOL studio_type_char(rdpContext* context, WCHAR ch)
+{
+	SHORT vkState = 0;
+	BYTE vk = 0;
+	BOOL shift = FALSE;
+	UINT32 scan = 0;
+
+	if (!context || !context->input)
+		return FALSE;
+
+	if (ch == L'\r')
+		return TRUE;
+	if (ch == L'\n')
+	{
+		freerdp_input_send_keyboard_event_ex(context->input, TRUE, FALSE, 0x1C);
+		freerdp_input_send_keyboard_event_ex(context->input, FALSE, FALSE, 0x1C);
+		return TRUE;
+	}
+	if (ch == L'\t')
+	{
+		freerdp_input_send_keyboard_event_ex(context->input, TRUE, FALSE, 0x0F);
+		freerdp_input_send_keyboard_event_ex(context->input, FALSE, FALSE, 0x0F);
+		return TRUE;
+	}
+
+	vkState = VkKeyScanW(ch);
+	if (vkState == -1)
+		return FALSE;
+
+	vk = (BYTE)(vkState & 0xFF);
+	shift = (vkState & 0x0100) != 0;
+	scan = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+	if (!scan)
+		return FALSE;
+
+	if (shift)
+		freerdp_input_send_keyboard_event_ex(context->input, TRUE, FALSE, 0x2A);
+
+	freerdp_input_send_keyboard_event_ex(context->input, TRUE, FALSE, scan);
+	freerdp_input_send_keyboard_event_ex(context->input, FALSE, FALSE, scan);
+
+	if (shift)
+		freerdp_input_send_keyboard_event_ex(context->input, FALSE, FALSE, 0x2A);
+
+	return TRUE;
+}
+
+/* 把一段文本敲进去：可映射的字符用扫描码按键，其余退回 unicode 事件。 */
 static BOOL studio_send_text_events(rdpContext* context, const WCHAR* chars, size_t count)
 {
 	BOOL success = TRUE;
+	unsigned long pasteChunk = 32;
+	unsigned long pasteDelay = 10;
 
 	if (!context || !context->input || !chars)
 		return FALSE;
 
+	{
+		const char* chunkEnv = getenv("STUDIO_PASTE_CHUNK");
+		const char* delayEnv = getenv("STUDIO_PASTE_DELAY");
+		if (chunkEnv && chunkEnv[0])
+			pasteChunk = strtoul(chunkEnv, NULL, 10);
+		if (delayEnv && delayEnv[0])
+			pasteDelay = strtoul(delayEnv, NULL, 10);
+		if (pasteChunk == 0)
+			pasteChunk = 32;
+	}
+
 	for (size_t i = 0; i < count && success; i++)
 	{
-		const BOOL down = freerdp_input_send_unicode_keyboard_event(context->input, 0, chars[i]);
-		const BOOL up =
-		    freerdp_input_send_unicode_keyboard_event(context->input, KBD_FLAGS_RELEASE, chars[i]);
-		success = down && up;
+		if (!studio_type_char(context, chars[i]))
+		{
+			const BOOL down = freerdp_input_send_unicode_keyboard_event(context->input, 0, chars[i]);
+			const BOOL up =
+			    freerdp_input_send_unicode_keyboard_event(context->input, KBD_FLAGS_RELEASE, chars[i]);
+			success = down && up;
+		}
 
-		if ((i % 32) == 31)
-			Sleep(10);
+		if ((i % pasteChunk) == (pasteChunk - 1))
+			Sleep(pasteDelay);
 	}
 
 	return success;
