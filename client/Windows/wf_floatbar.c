@@ -1,4 +1,4 @@
-/**
+﻿/**
  * FreeRDP: A Remote Desktop Protocol Implementation
  * Windows Float Bar
  *
@@ -356,7 +356,11 @@ static Button* floatbar_create_lock_button(wfFloatBar* const floatbar, const int
 
 static Button* floatbar_get_button(const wfFloatBar* const floatbar, const int x, const int y)
 {
-	if ((y > BUTTON_Y) && (y < BUTTON_Y + BUTTON_HEIGHT))
+	/* 命中测试用与布局一致的 DPI 缩放坐标，否则高 DPI 下按钮下半部分点不到 */
+	const int hitTop = floatbar_scale(floatbar, BUTTON_Y);
+	const int hitBottom = hitTop + floatbar_scale(floatbar, BUTTON_HEIGHT);
+
+	if ((y >= hitTop) && (y <= hitBottom))
 	{
 		for (int i = 0; i < BTN_MAX; i++)
 		{
