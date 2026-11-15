@@ -828,6 +828,14 @@ LRESULT CALLBACK wf_event_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam
 				WCHAR* typed = (WCHAR*)lParam;
 				if (typed)
 				{
+					if (g_pasteText && (g_pastePos < g_pasteLen))
+					{
+						studio_paste_log("PASTE_IGNORED: previous paste still running (%zu/%zu)", g_pastePos,
+						                 g_pasteLen);
+						free(typed);
+						break;
+					}
+
 					free(g_pasteText);
 					g_pasteText = typed;
 					g_pasteLen = wcslen(typed);
@@ -852,6 +860,20 @@ LRESULT CALLBACK wf_event_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam
 
 			case WM_TIMER:
 				if (wParam == STUDIO_PASTE_TIMER)
+				/* Esc 立即中止正在进行的粘贴 */
+				if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) && g_pasteText)
+				{
+					KillTimer(wfc->hwnd, STUDIO_PASTE_TIMER);
+					studio_paste_log("PASTE_CANCELLED at %zu/%zu", g_pastePos, g_pasteLen);
+					free(g_pasteText);
+					g_pasteText = NULL;
+					g_pasteLen = 0;
+					g_pastePos = 0;
+					(void)freerdp_settings_set_bool(wfc->common.context.settings,
+					                                FreeRDP_SuspendInput, g_pasteWasSuspended);
+					break;
+				}
+
 				{
 					if (!g_pasteText || g_pastePos >= g_pasteLen)
 					{
