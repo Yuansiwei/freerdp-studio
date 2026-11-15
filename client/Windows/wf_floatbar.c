@@ -33,7 +33,6 @@
 
 /* TIMERs */
 #define TIMER_HIDE 1
-#define TIMER_DRAG 9
 #define TIMER_ANIMAT_SHOW 2
 #define TIMER_ANIMAT_HIDE 3
 
@@ -249,28 +248,6 @@ static BOOL update_locked_state(wfFloatBar* floatbar)
 	return TRUE;
 }
 
-/* 浮条诊断日志：确认鼠标消息是否到达、命中测试结果与窗口矩形 */
-static void floatbar_log(const char* format, ...)
-{
-	char path[MAX_PATH * 2] = WINPR_C_ARRAY_INIT;
-	const char* temp = getenv("TEMP");
-	FILE* fp = NULL;
-	va_list args;
-
-	if (!temp || !temp[0])
-		return;
-
-	(void)snprintf(path, sizeof(path), "%s\\studio-floatbar.log", temp);
-	fp = fopen(path, "a");
-	if (!fp)
-		return;
-
-	va_start(args, format);
-	vfprintf(fp, format, args);
-	va_end(args);
-	fputc('\n', fp);
-	fclose(fp);
-}
 static int button_hit(Button* const button)
 {
 	wfFloatBar* const floatbar = button->floatbar;
@@ -379,17 +356,12 @@ static Button* floatbar_create_lock_button(wfFloatBar* const floatbar, const int
 
 static Button* floatbar_get_button(const wfFloatBar* const floatbar, const int x, const int y)
 {
-	/* 布局用的是按 DPI 缩放后的尺寸，命中测试必须用同一套坐标，
-	 * 否则高 DPI 下按钮下半部分点不到（历史 bug）。 */
-	const int buttonTop = floatbar_scale(floatbar, BUTTON_Y);
-	const int buttonBottom = buttonTop + floatbar_scale(floatbar, BUTTON_HEIGHT);
-
-	if ((y >= buttonTop) && (y <= buttonBottom))
+	if ((y > BUTTON_Y) && (y < BUTTON_Y + BUTTON_HEIGHT))
 	{
 		for (int i = 0; i < BTN_MAX; i++)
 		{
-			if ((floatbar->buttons[i] != nullptr) && (x >= floatbar->buttons[i]->x) &&
-			    (x <= floatbar->buttons[i]->x + floatbar->buttons[i]->w))
+			if ((floatbar->buttons[i] != nullptr) && (x > floatbar->buttons[i]->x) &&
+			    (x < floatbar->buttons[i]->x + floatbar->buttons[i]->w))
 			{
 				return floatbar->buttons[i];
 			}
@@ -398,6 +370,7 @@ static Button* floatbar_get_button(const wfFloatBar* const floatbar, const int x
 
 	return nullptr;
 }
+
 static Button* floatbar_get_button_by_type(const wfFloatBar* const floatbar, const int type)
 {
 	if (!floatbar)
@@ -699,8 +672,6 @@ static LRESULT CALLBACK floatbar_proc(const HWND hWnd, const UINT Msg, const WPA
 {
 	static int drag_mode = DRAG_NONE;
 	static int lbtn_dwn = FALSE;
-static Button* pressed_button = NULL;
-static int drag_move_count = 0;
 	static int btn_dwn_x = 0;
 	static int btn_dwn_y = 0;
 	static int btn_dwn_screen_x = 0;
@@ -785,19 +756,15 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 				GetWindowRect(floatbar->wfc->hwnd, &drag_start_window);
 				drag_start_left = floatbar->rect.left;
 				drag_start_width = floatbar->width;
-				drag_move_count = 0;
 			}
 			else
-			{
-				drag_move_count = 0;
-				pressed_button = button;
 				lbtn_dwn = TRUE;
-			}
+
+			break;
 
 		case WM_LBUTTONUP:
 			pos_x = LOWORD(lParam);
 			pos_y = HIWORD(lParam);
-			KillTimer(hWnd, TIMER_DRAG);
 			const BOOL was_dragging = drag_mode != DRAG_NONE;
 			drag_mode = DRAG_NONE;
 			ReleaseCapture();
@@ -811,13 +778,13 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 
 			if (lbtn_dwn)
 			{
-				if (pressed_button)
-					button_hit(pressed_button);
+				button = floatbar_get_button(floatbar, pos_x, pos_y);
 
-				pressed_button = NULL;
+				if (button)
+					button_hit(button);
+
 				lbtn_dwn = FALSE;
 			}
-
 
 			break;
 
@@ -839,7 +806,6 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 
 			if (drag_mode != DRAG_NONE)
 			{
-				drag_move_count++;
 				// Use screen pos during left-side resize to sync new position and avoid jittering.
 				pt.x = pos_x;
 				pt.y = pos_y;
@@ -945,54 +911,9 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 		}
 
 		case WM_TIMER:
-			{
-				static int timerLogs = 0;
-				if (timerLogs < 20)
-				{
-					timerLogs++;
-					floatbar_log("WM_TIMER wParam=%llu", (unsigned long long)wParam);
-				}
-			}
 			switch (wParam)
 			{
-				case TIMER_DRAG:
-			{
-				POINT cp = WINPR_C_ARRAY_INIT;
-				if ((drag_mode != DRAG_NONE) && GetCursorPos(&cp))
-				{
-					ScreenToClient(hWnd, &cp);
-					pos_x = cp.x;
-					pos_y = cp.y;
-					drag_move_count++;
-					if (drag_mode == DRAG_MOVE)
-					{
-						const int dy = pos_y - btn_dwn_y;
-						const int threshold = floatbar->height * RESTORE_DRAG_BAR_MULTIPLIER;
-						if (dy > threshold && floatbar->wfc->fullscreen_toggle &&
-						    floatbar->wfc->fullscreen)
-						{
-							drag_mode = DRAG_NONE;
-							KillTimer(hWnd, TIMER_DRAG);
-							wf_toggle_fullscreen(floatbar->wfc);
-							ReleaseCapture();
-						}
-						else
-						{
-							const int span = floatbar_parent_width(floatbar);
-							floatbar->rect.left = floatbar->rect.left + pos_x - btn_dwn_x;
-							if (floatbar->rect.left < 0)
-								floatbar->rect.left = 0;
-							else if (floatbar->rect.left > span - floatbar->width)
-								floatbar->rect.left = span - floatbar->width;
-							MoveWindow(hWnd, floatbar->rect.left, 0, floatbar->width, floatbar->height,
-							           TRUE);
-						}
-					}
-				}
-				break;
-			}
-
-			case TIMER_HIDE:
+				case TIMER_HIDE:
 					floatbar_animation(floatbar, FALSE);
 					break;
 
@@ -1231,49 +1152,4 @@ BOOL wf_floatbar_reset_position(wfFloatBar* floatbar)
 	}
 
 	return TRUE;
-}
-
-BOOL wf_floatbar_hit_drag_area(wfFloatBar* floatbar, int screenX, int screenY)
-{
-	POINT p = WINPR_C_ARRAY_INIT;
-
-	if (!floatbar || !floatbar->hwnd)
-		return FALSE;
-
-	p.x = screenX;
-	p.y = screenY;
-	ScreenToClient(floatbar->hwnd, &p);
-
-	if ((p.x < 0) || (p.y < 0) || (p.x >= (int)floatbar->width) || (p.y >= (int)floatbar->height))
-		return FALSE;
-
-	return floatbar_get_button(floatbar, p.x, p.y) == nullptr;
-}
-
-void wf_floatbar_move_left(wfFloatBar* floatbar, LONG left)
-{
-	const LONG span = floatbar_parent_width(floatbar);
-
-	if (!floatbar || !floatbar->hwnd)
-		return;
-
-	if (left < 0)
-		left = 0;
-	if (left > span - (LONG)floatbar->width)
-		left = span - (LONG)floatbar->width;
-	if (left < 0)
-		left = 0;
-
-	floatbar->rect.left = left;
-	MoveWindow(floatbar->hwnd, left, 0, floatbar->width, floatbar->height, TRUE);
-}
-
-LONG wf_floatbar_left(wfFloatBar* floatbar)
-{
-	return floatbar ? floatbar->rect.left : 0;
-}
-
-UINT32 wf_floatbar_height(wfFloatBar* floatbar)
-{
-	return floatbar ? floatbar->height : 0;
 }
