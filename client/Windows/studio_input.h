@@ -1,8 +1,29 @@
-/* Local, explicit input endpoint for this FreeRDP connection. */
+﻿/* Local, explicit input endpoint for this FreeRDP connection. */
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <string.h>
 
+/* 把一段文本敲进去（unicode 键盘事件，与 --text 注入完全同一条路径）。 */
+static BOOL studio_send_text_events(rdpContext* context, const WCHAR* chars, size_t count)
+{
+	BOOL success = TRUE;
+
+	if (!context || !context->input || !chars)
+		return FALSE;
+
+	for (size_t i = 0; i < count && success; i++)
+	{
+		const BOOL down = freerdp_input_send_unicode_keyboard_event(context->input, 0, chars[i]);
+		const BOOL up =
+		    freerdp_input_send_unicode_keyboard_event(context->input, KBD_FLAGS_RELEASE, chars[i]);
+		success = down && up;
+
+		if ((i % 32) == 31)
+			Sleep(10);
+	}
+
+	return success;
+}
 static LRESULT studio_send_input(rdpContext* context, const COPYDATASTRUCT* message)
 {
 	if (!message || !message->lpData || message->cbData == 0 || message->cbData > 8192)
@@ -54,12 +75,7 @@ static LRESULT studio_send_input(rdpContext* context, const COPYDATASTRUCT* mess
 	{
 		const WCHAR* chars = (const WCHAR*)message->lpData;
 		const size_t count = message->cbData / sizeof(WCHAR);
-		for (size_t i = 0; i < count && success; i++)
-		{
-			const BOOL down = freerdp_input_send_unicode_keyboard_event(context->input, 0, chars[i]);
-			const BOOL up = freerdp_input_send_unicode_keyboard_event(context->input, KBD_FLAGS_RELEASE, chars[i]);
-			success = down && up;
-		}
+		success = studio_send_text_events(context, chars, count);
 	}
 	else
 	{
