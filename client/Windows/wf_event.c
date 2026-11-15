@@ -1,4 +1,4 @@
-﻿/**
+/**
  * FreeRDP: A Remote Desktop Protocol Implementation
  * Event Handling
  *
@@ -160,8 +160,7 @@ typedef struct
 static BOOL studio_sendinput_char(WCHAR ch)
 {
 	studioInput events[2];
-	SHORT vkState = 0;
-	BYTE vk = 0;
+	UINT sent = 0;
 
 	memset(events, 0, sizeof(events));
 
@@ -170,7 +169,7 @@ static BOOL studio_sendinput_char(WCHAR ch)
 
 	if (ch == L'\n' || ch == L'\t')
 	{
-		vk = (ch == L'\n') ? 0x0D : 0x09;
+		const WORD vk = (ch == L'\n') ? 0x0D : 0x09;
 		events[0].type = 1;
 		events[0].u.ki.wVk = vk;
 		events[1].type = 1;
@@ -179,35 +178,21 @@ static BOOL studio_sendinput_char(WCHAR ch)
 	}
 	else
 	{
-		vkState = VkKeyScanW(ch);
-		if (vkState != -1)
-		{
-			/* 可映射字符：用真实按键，交给远端按布局解释 */
-			vk = (BYTE)(vkState & 0xFF);
-			events[0].type = 1;
-			events[0].u.ki.wVk = vk;
-			events[1].type = 1;
-			events[1].u.ki.wVk = vk;
-			events[1].u.ki.dwFlags = 0x0002;
-		}
-		else
-		{
-			events[0].type = 1;
-			events[0].u.ki.wScan = (WORD)ch;
-			events[0].u.ki.dwFlags = 0x0004;
-			events[1].type = 1;
-			events[1].u.ki.wScan = (WORD)ch;
-			events[1].u.ki.dwFlags = 0x0004 | 0x0002;
-		}
+		/* 与 text-typer 一致：始终用 KEYEVENTF_UNICODE，不依赖键盘布局 */
+		events[0].type = 1;
+		events[0].u.ki.wScan = (WORD)ch;
+		events[0].u.ki.dwFlags = 0x0004;
+		events[1].type = 1;
+		events[1].u.ki.wScan = (WORD)ch;
+		events[1].u.ki.dwFlags = 0x0004 | 0x0002;
 	}
 
-	{
-		const UINT sent = SendInput(2, (INPUT*)events, sizeof(studioInput));
-		if (sent != 2)
-			studio_paste_log("SENDINPUT_FAIL: sent=%u size=%u err=%lu", sent, (unsigned)sizeof(studioInput),
-			                 (unsigned long)GetLastError());
-		return sent == 2;
-	}
+	sent = SendInput(2, (INPUT*)events, sizeof(studioInput));
+
+	if (sent != 2)
+		studio_paste_log("SENDINPUT_FAIL: sent=%u err=%lu", sent, (unsigned long)GetLastError());
+
+	return sent == 2;
 }
 
 typedef struct
@@ -312,10 +297,23 @@ static DWORD WINAPI studio_paste_thread(LPVOID arg)
 		if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0)
 			break;
 
-		studio_send_text_events(&job->wfc->common.context, job->text + pos, take);
+		/* 前台时用本机 SendInput 注入（等价 text-typer，不丢字）；
+		 * 后台时退回 RDP 输入通道（可后台，速率保守）。 */
+		if (GetForegroundWindow() == job->wfc->hwnd)
+		{
+			for (size_t k = 0; k < take; k++)
+			{
+				if (!studio_sendinput_char(job->text[pos + k]))
+					break;
+				Sleep(tickMs);
+			}
+		}
+		else
+		{
+			studio_send_text_events(&job->wfc->common.context, job->text + pos, take);
+			Sleep(tickMs);
+		}
 		pos += take;
-
-		Sleep(tickMs);
 	}
 
 	timeEndPeriod(1);
