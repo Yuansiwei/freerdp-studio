@@ -1,4 +1,4 @@
-/**
+﻿/**
  * FreeRDP: A Remote Desktop Protocol Implementation
  * Event Handling
  *
@@ -242,8 +242,17 @@ LRESULT CALLBACK wf_ll_kbd_proc(int nCode, WPARAM wParam, LPARAM lParam)
 				}
 
 				/* Ctrl+V：本机复制过且通道不可用时，记下文本，等 Ctrl 松开后再敲。 */
+				if (((wParam == WM_KEYDOWN) || (wParam == WM_SYSKEYDOWN)) && (p->vkCode == 'V'))
+				{
+					studio_paste_log("V_DECIDE: ctrl=%d shift=%d alt=%d hostCopy=%d unicode=%d",
+					                 (int)g_ctrlDown, (int)g_shiftDown, (int)g_altDown,
+					                 (int)wf_cliprdr_last_copy_was_host(),
+					                 (int)freerdp_settings_get_bool(wfc->common.context.settings,
+					                                                FreeRDP_UnicodeInput));
+				}
+
 				if (((wParam == WM_KEYDOWN) || (wParam == WM_SYSKEYDOWN)) &&
-				    (p->vkCode == 'V') && g_ctrlDown && !g_shiftDown &&
+				    (p->vkCode == 'V') && g_ctrlDown && !g_shiftDown && (GetForegroundWindow() == wfc->hwnd) &&
 				    !g_altDown && wf_cliprdr_last_copy_was_host() &&
 				    freerdp_settings_get_bool(wfc->common.context.settings, FreeRDP_UnicodeInput))
 				{
@@ -279,7 +288,7 @@ LRESULT CALLBACK wf_ll_kbd_proc(int nCode, WPARAM wParam, LPARAM lParam)
 					if (!PostMessage(wfc->hwnd, WM_STUDIO_TYPED_PASTE, 0, (LPARAM)text))
 						free(text);
 
-					return 1;
+					/* 不吞掉 Ctrl 抬起：必须让远端收到，否则字符会带 Ctrl 修饰。 */
 				}
 
 				if (((wParam == WM_KEYUP) || (wParam == WM_SYSKEYUP)) && (p->vkCode == 'V') &&
@@ -641,8 +650,19 @@ LRESULT CALLBACK wf_event_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam
 				WCHAR* typed = (WCHAR*)lParam;
 				if (typed)
 				{
+					const BOOL wasSuspended =
+					    freerdp_settings_get_bool(wfc->common.context.settings, FreeRDP_SuspendInput);
+					const BOOL unicodeOn =
+					    freerdp_settings_get_bool(wfc->common.context.settings, FreeRDP_UnicodeInput);
+
+					(void)freerdp_settings_set_bool(wfc->common.context.settings, FreeRDP_SuspendInput,
+					                                FALSE);
 					studio_send_text_events(&wfc->common.context, typed, wcslen(typed));
-					studio_paste_log("TYPED_PASTE: sent len=%zu", wcslen(typed));
+					(void)freerdp_settings_set_bool(wfc->common.context.settings, FreeRDP_SuspendInput,
+					                                wasSuspended);
+
+					studio_paste_log("TYPED_PASTE: sent len=%zu unicode=%d wasSuspended=%d",
+					                 wcslen(typed), (int)unicodeOn, (int)wasSuspended);
 					free(typed);
 				}
 				break;
