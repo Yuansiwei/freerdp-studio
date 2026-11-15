@@ -248,6 +248,28 @@ static BOOL update_locked_state(wfFloatBar* floatbar)
 	return TRUE;
 }
 
+/* 浮条诊断日志：确认鼠标消息是否到达、命中测试结果与窗口矩形 */
+static void floatbar_log(const char* format, ...)
+{
+	char path[MAX_PATH * 2] = WINPR_C_ARRAY_INIT;
+	const char* temp = getenv("TEMP");
+	FILE* fp = NULL;
+	va_list args;
+
+	if (!temp || !temp[0])
+		return;
+
+	(void)snprintf(path, sizeof(path), "%s\\studio-floatbar.log", temp);
+	fp = fopen(path, "a");
+	if (!fp)
+		return;
+
+	va_start(args, format);
+	vfprintf(fp, format, args);
+	va_end(args);
+	fputc('\n', fp);
+	fclose(fp);
+}
 static int button_hit(Button* const button)
 {
 	wfFloatBar* const floatbar = button->floatbar;
@@ -356,12 +378,17 @@ static Button* floatbar_create_lock_button(wfFloatBar* const floatbar, const int
 
 static Button* floatbar_get_button(const wfFloatBar* const floatbar, const int x, const int y)
 {
-	if ((y > BUTTON_Y) && (y < BUTTON_Y + BUTTON_HEIGHT))
+	/* 布局用的是按 DPI 缩放后的尺寸，命中测试必须用同一套坐标，
+	 * 否则高 DPI 下按钮下半部分点不到（历史 bug）。 */
+	const int buttonTop = floatbar_scale(floatbar, BUTTON_Y);
+	const int buttonBottom = buttonTop + floatbar_scale(floatbar, BUTTON_HEIGHT);
+
+	if ((y >= buttonTop) && (y <= buttonBottom))
 	{
 		for (int i = 0; i < BTN_MAX; i++)
 		{
-			if ((floatbar->buttons[i] != nullptr) && (x > floatbar->buttons[i]->x) &&
-			    (x < floatbar->buttons[i]->x + floatbar->buttons[i]->w))
+			if ((floatbar->buttons[i] != nullptr) && (x >= floatbar->buttons[i]->x) &&
+			    (x <= floatbar->buttons[i]->x + floatbar->buttons[i]->w))
 			{
 				return floatbar->buttons[i];
 			}
@@ -370,7 +397,6 @@ static Button* floatbar_get_button(const wfFloatBar* const floatbar, const int x
 
 	return nullptr;
 }
-
 static Button* floatbar_get_button_by_type(const wfFloatBar* const floatbar, const int type)
 {
 	if (!floatbar)
@@ -722,6 +748,7 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			SystemParametersInfo(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICS), &ncm, 0);
 			SelectObject(hdc, CreateFontIndirect(&ncm.lfCaptionFont));
 			floatbar_trigger_hide(floatbar);
+			floatbar_show(floatbar);
 			break;
 
 		case WM_PAINT:
@@ -734,6 +761,16 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			return TRUE;
 
 		case WM_LBUTTONDOWN:
+			{
+				/* 消息可能来自主窗口转发，lParam 的 Y 不可信：一律用真实光标位置 */
+				POINT realPt = WINPR_C_ARRAY_INIT;
+				if (GetCursorPos(&realPt))
+				{
+					ScreenToClient(hWnd, &realPt);
+					pos_x = realPt.x;
+					pos_y = realPt.y;
+				}
+			}
 			pos_x = LOWORD(lParam);
 			pos_y = HIWORD(lParam);
 			button = floatbar_get_button(floatbar, pos_x, pos_y);
@@ -765,6 +802,16 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			}
 
 		case WM_LBUTTONUP:
+			{
+				/* 消息可能来自主窗口转发，lParam 的 Y 不可信：一律用真实光标位置 */
+				POINT realPt = WINPR_C_ARRAY_INIT;
+				if (GetCursorPos(&realPt))
+				{
+					ScreenToClient(hWnd, &realPt);
+					pos_x = realPt.x;
+					pos_y = realPt.y;
+				}
+			}
 			pos_x = LOWORD(lParam);
 			pos_y = HIWORD(lParam);
 			const BOOL was_dragging = drag_mode != DRAG_NONE;
@@ -791,6 +838,16 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			break;
 
 		case WM_LBUTTONDBLCLK:
+			{
+				/* 消息可能来自主窗口转发，lParam 的 Y 不可信：一律用真实光标位置 */
+				POINT realPt = WINPR_C_ARRAY_INIT;
+				if (GetCursorPos(&realPt))
+				{
+					ScreenToClient(hWnd, &realPt);
+					pos_x = realPt.x;
+					pos_y = realPt.y;
+				}
+			}
 			pos_x = LOWORD(lParam);
 			pos_y = HIWORD(lParam);
 
@@ -800,8 +857,17 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			break;
 
 		case WM_MOUSEMOVE:
+			{
+				/* 消息可能来自主窗口转发，lParam 的 Y 不可信：一律用真实光标位置 */
+				POINT realPt = WINPR_C_ARRAY_INIT;
+				if (GetCursorPos(&realPt))
+				{
+					ScreenToClient(hWnd, &realPt);
+					pos_x = realPt.x;
+					pos_y = realPt.y;
+				}
+			}
 			pos_x = LOWORD(lParam);
-			pos_y = HIWORD(lParam);
 
 			if (!floatbar->locked)
 				floatbar_animation(floatbar, TRUE);
