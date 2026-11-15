@@ -1,4 +1,4 @@
-﻿/* Local, explicit input endpoint for this FreeRDP connection. */
+/* Local, explicit input endpoint for this FreeRDP connection. */
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <string.h>
@@ -55,18 +55,37 @@ static BOOL studio_type_char(rdpContext* context, WCHAR ch)
 static BOOL studio_send_text_events(rdpContext* context, const WCHAR* chars, size_t count)
 {
 	BOOL success = TRUE;
+	size_t failed = 0;
 
 	if (!context || !context->input || !chars)
 		return FALSE;
 
-	for (size_t i = 0; i < count && success; i++)
+	for (size_t i = 0; i < count; i++)
 	{
-		if (!studio_type_char(context, chars[i]))
+		const BOOL down = freerdp_input_send_unicode_keyboard_event(context->input, 0, chars[i]);
+		const BOOL up =
+		    freerdp_input_send_unicode_keyboard_event(context->input, KBD_FLAGS_RELEASE, chars[i]);
+		const BOOL ok = down && up;
+
+		if (!ok)
+			failed++;
+	}
+
+	success = (failed == 0);
+	if (!success)
+	{
+		const char* temp = getenv("TEMP");
+		if (temp && temp[0])
 		{
-			const BOOL down = freerdp_input_send_unicode_keyboard_event(context->input, 0, chars[i]);
-			const BOOL up =
-			    freerdp_input_send_unicode_keyboard_event(context->input, KBD_FLAGS_RELEASE, chars[i]);
-			success = down && up;
+			char logPath[MAX_PATH * 2] = WINPR_C_ARRAY_INIT;
+			FILE* fp = NULL;
+			(void)snprintf(logPath, sizeof(logPath), "%s\\studio-paste.log", temp);
+			fp = fopen(logPath, "a");
+			if (fp)
+			{
+				(void)fprintf(fp, "BATCH_FAILED: %zu of %zu events rejected\n", failed, count);
+				fclose(fp);
+			}
 		}
 	}
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * FreeRDP: A Remote Desktop Protocol Implementation
  * Event Handling
  *
@@ -274,7 +274,7 @@ static DWORD WINAPI studio_paste_thread(LPVOID arg)
 
 	timeBeginPeriod(1);
 
-	unsigned long perTick = STUDIO_PASTE_PER_TICK;
+	unsigned long perTick = 1;
 	unsigned long tickMs = 5;
 	{
 		const char* e1 = getenv("STUDIO_PASTE_PER_TICK");
@@ -296,21 +296,16 @@ static DWORD WINAPI studio_paste_thread(LPVOID arg)
 			break;
 		if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0)
 			break;
+		/* 一律走 RDP 输入通道（后台可用）。 */
+		{
+			const ULONGLONG b0 = GetTickCount64();
+			const BOOL ok = studio_send_text_events(&job->wfc->common.context, job->text + pos, take);
+			const ULONGLONG b1 = GetTickCount64();
 
-		/* 前台时用本机 SendInput 注入（等价 text-typer，不丢字）；
-		 * 后台时退回 RDP 输入通道（可后台，速率保守）。 */
-		if (GetForegroundWindow() == job->wfc->hwnd)
-		{
-			for (size_t k = 0; k < take; k++)
-			{
-				if (!studio_sendinput_char(job->text[pos + k]))
-					break;
-				Sleep(tickMs);
-			}
-		}
-		else
-		{
-			studio_send_text_events(&job->wfc->common.context, job->text + pos, take);
+			if (!ok || (b1 - b0) > 50)
+				studio_paste_log("BATCH: take=%zu ok=%d ms=%llu pos=%zu", take, (int)ok,
+				                 (unsigned long long)(b1 - b0), pos);
+
 			Sleep(tickMs);
 		}
 		pos += take;
