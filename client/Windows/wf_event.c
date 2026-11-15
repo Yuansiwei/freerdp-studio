@@ -274,8 +274,8 @@ static DWORD WINAPI studio_paste_thread(LPVOID arg)
 
 	timeBeginPeriod(1);
 
-	unsigned long perTick = 10;
-	unsigned long tickMs = 5;
+	unsigned long perTick = 1;
+	unsigned long tickMs = 1;
 	{
 		const char* e1 = getenv("STUDIO_PASTE_PER_TICK");
 		const char* e2 = getenv("STUDIO_PASTE_TICK_MS");
