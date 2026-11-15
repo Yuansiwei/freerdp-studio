@@ -216,6 +216,7 @@ typedef struct
 	char user[256];
 	char password[256];
 	BOOL remember;
+	BOOL useSso;
 } StudioConnect;
 
 static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -257,6 +258,7 @@ static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, 
 			}
 				/* 默认勾选记住密码 */
 				CheckDlgButton(hDlg, IDC_STUDIO_REMEMBER, BST_CHECKED);
+			CheckDlgButton(hDlg, IDC_STUDIO_SSO, BST_CHECKED);
 			return FALSE;
 		case WM_ERASEBKGND:
 		{
@@ -351,6 +353,7 @@ static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, 
 					                sizeof(state->password));
 					state->remember =
 					    IsDlgButtonChecked(hDlg, IDC_STUDIO_REMEMBER) == BST_CHECKED;
+					state->useSso = IsDlgButtonChecked(hDlg, IDC_STUDIO_SSO) == BST_CHECKED;
 
 					EndDialog(hDlg, IDOK);
 					return TRUE;
@@ -532,18 +535,37 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 	AddDefaultSettings(settings);
 
-	/* Credentials typed into the connect dialog win over the credential manager. */
-	if (target.user[0])
+	/* 勾选「使用当前 Windows 凭据」时不发送任何凭据，交给 NLA/SSO。
+	 * 否则把 domain\user 拆成 Domain + Username 两个字段再发送。 */
+	if (!target.useSso)
 	{
-		if (!freerdp_settings_set_string(settings, FreeRDP_Username, target.user))
-			goto out;
-	}
+		if (target.user[0])
+		{
+			char domain[256] = WINPR_C_ARRAY_INIT;
+			const char* account = target.user;
+			const char* split = strchr(target.user, '\\');
 
-	if (target.password[0])
-	{
-		if (!freerdp_settings_set_string(settings, FreeRDP_Password, target.password))
-			goto out;
-		wfc->studioSaveCredentials = target.remember;
+			if (split && ((size_t)(split - target.user) < sizeof(domain)))
+			{
+				const size_t length = (size_t)(split - target.user);
+				memcpy(domain, target.user, length);
+				domain[length] = '\0';
+				account = split + 1;
+
+				if (!freerdp_settings_set_string(settings, FreeRDP_Domain, domain))
+					goto out;
+			}
+
+			if (!freerdp_settings_set_string(settings, FreeRDP_Username, account))
+				goto out;
+		}
+
+		if (target.password[0])
+		{
+			if (!freerdp_settings_set_string(settings, FreeRDP_Password, target.password))
+				goto out;
+			wfc->studioSaveCredentials = target.remember;
+		}
 	}
 
 	/* Name the window and its input endpoint after the host only. */

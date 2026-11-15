@@ -15,7 +15,7 @@ IDB_CLOSE_ACT          BITMAP                  "close_active.bmp"
 IDB_RESTORE            BITMAP                  "restore.bmp"
 IDB_RESTORE_ACT        BITMAP                  "restore_active.bmp"
 
-IDD_STUDIO_CONNECT DIALOGEX 0, 0, 271, 150
+IDD_STUDIO_CONNECT DIALOGEX 0, 0, 271, 158
 STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "FreeRDP"
 FONT 9, "Microsoft YaHei UI", 400, 0, 0x1
@@ -33,10 +33,11 @@ BEGIN
     LTEXT           "密码(&P):", -1, 10, 90, 40, 8
     EDITTEXT        IDC_STUDIO_PASSWORD, 54, 89, 207, 9, ES_PASSWORD | ES_AUTOHSCROLL | WS_TABSTOP
 
-    CONTROL         "记住密码(&R)", IDC_STUDIO_REMEMBER, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 54, 100, 130, 9
+    CONTROL         "使用当前 Windows 登录凭据(&W)", IDC_STUDIO_SSO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 54, 102, 207, 9
+    CONTROL         "记住密码(&R)", IDC_STUDIO_REMEMBER, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 54, 112, 130, 9
 
-    LTEXT           "将使用保存的凭据连接到此计算机。", -1, 10, 112, 251, 8
+    LTEXT           "勾选时用当前登录身份连接，不发送上面填写的密码。", -1, 10, 124, 251, 8
 
-    DEFPUSHBUTTON   "连接(&N)", IDOK, 162, 131, 47, 12
-    PUSHBUTTON      "帮助(&H)", IDC_STUDIO_HELP, 214, 131, 47, 12
+    DEFPUSHBUTTON   "连接(&N)", IDOK, 162, 139, 47, 12
+    PUSHBUTTON      "帮助(&H)", IDC_STUDIO_HELP, 214, 139, 47, 12
 END
