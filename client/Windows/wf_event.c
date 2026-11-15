@@ -42,6 +42,7 @@
 
 #include "studio_input.h"
 #include "wf_cliprdr.h"
+#include "wf_floatbar.h"
 
 static HWND g_focus_hWnd = nullptr;
 static HWND g_main_hWnd = nullptr;
@@ -331,6 +332,12 @@ static DWORD WINAPI studio_paste_thread(LPVOID arg)
 	return 0;
 }
 static BOOL g_typedPasteKeyDown = FALSE;
+
+/* 浮条拖动（在主窗口里处理，浮条自己收不到拖拽期间的鼠标消息） */
+static BOOL g_barDragging = FALSE;
+static int g_barDragStartX = 0;
+static int g_barDragStartY = 0;
+static LONG g_barDragStartLeft = 0;
 
 LRESULT CALLBACK wf_ll_kbd_proc(int nCode, WPARAM wParam, LPARAM lParam)
 {
@@ -885,7 +892,6 @@ LRESULT CALLBACK wf_event_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam
 
 		if (!g_main_hWnd)
 			g_main_hWnd = wfc->hwnd;
-
 		switch (Msg)
 		{
 			case WM_STUDIO_TYPED_PASTE:

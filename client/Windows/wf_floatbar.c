@@ -750,7 +750,6 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			SystemParametersInfo(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICS), &ncm, 0);
 			SelectObject(hdc, CreateFontIndirect(&ncm.lfCaptionFont));
 			floatbar_trigger_hide(floatbar);
-			floatbar_show(floatbar);
 			break;
 
 		case WM_PAINT:
@@ -763,16 +762,6 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			return TRUE;
 
 		case WM_LBUTTONDOWN:
-			{
-				/* 消息可能来自主窗口转发，lParam 的 Y 不可信：一律用真实光标位置 */
-				POINT realPt = WINPR_C_ARRAY_INIT;
-				if (GetCursorPos(&realPt))
-				{
-					ScreenToClient(hWnd, &realPt);
-					pos_x = realPt.x;
-					pos_y = realPt.y;
-				}
-			}
 			pos_x = LOWORD(lParam);
 			pos_y = HIWORD(lParam);
 			button = floatbar_get_button(floatbar, pos_x, pos_y);
@@ -782,7 +771,7 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 				pt.x = pos_x;
 				pt.y = pos_y;
 				ClientToScreen(hWnd, &pt);
-				/* 不使用鼠标捕获：捕获会立刻触发 WM_CAPTURECHANGED 把拖拽状态清掉 */
+				SetCapture(hWnd);
 				floatbar_kill_timers(floatbar);
 				drag_mode = floatbar_get_resize_mode(floatbar, pos_x, pos_y);
 				if (drag_mode == DRAG_NONE)
@@ -797,11 +786,6 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 				drag_start_left = floatbar->rect.left;
 				drag_start_width = floatbar->width;
 				drag_move_count = 0;
-				{
-					const UINT_PTR dragTimerId = SetTimer(hWnd, TIMER_DRAG, 15, nullptr);
-					floatbar_log("SETTIMER_DRAG id=%llu err=%lu", (unsigned long long)dragTimerId,
-					             (unsigned long)GetLastError());
-				}
 			}
 			else
 			{
@@ -811,21 +795,12 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			}
 
 		case WM_LBUTTONUP:
-			KillTimer(hWnd, TIMER_DRAG);
-			{
-				/* 消息可能来自主窗口转发，lParam 的 Y 不可信：一律用真实光标位置 */
-				POINT realPt = WINPR_C_ARRAY_INIT;
-				if (GetCursorPos(&realPt))
-				{
-					ScreenToClient(hWnd, &realPt);
-					pos_x = realPt.x;
-					pos_y = realPt.y;
-				}
-			}
 			pos_x = LOWORD(lParam);
 			pos_y = HIWORD(lParam);
+			KillTimer(hWnd, TIMER_DRAG);
 			const BOOL was_dragging = drag_mode != DRAG_NONE;
 			drag_mode = DRAG_NONE;
+			ReleaseCapture();
 			if (was_dragging)
 			{
 				/* Dropping the bar re-binds the session to the display it now covers. */
@@ -847,16 +822,6 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			break;
 
 		case WM_LBUTTONDBLCLK:
-			{
-				/* 消息可能来自主窗口转发，lParam 的 Y 不可信：一律用真实光标位置 */
-				POINT realPt = WINPR_C_ARRAY_INIT;
-				if (GetCursorPos(&realPt))
-				{
-					ScreenToClient(hWnd, &realPt);
-					pos_x = realPt.x;
-					pos_y = realPt.y;
-				}
-			}
 			pos_x = LOWORD(lParam);
 			pos_y = HIWORD(lParam);
 
@@ -866,16 +831,8 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			break;
 
 		case WM_MOUSEMOVE:
-			{
-				/* 消息可能来自主窗口转发，lParam 的 Y 不可信：一律用真实光标位置 */
-				POINT realPt = WINPR_C_ARRAY_INIT;
-				if (GetCursorPos(&realPt))
-				{
-					ScreenToClient(hWnd, &realPt);
-					pos_x = realPt.x;
-					pos_y = realPt.y;
-				}
-			}
+			pos_x = LOWORD(lParam);
+			pos_y = HIWORD(lParam);
 
 			if (!floatbar->locked)
 				floatbar_animation(floatbar, TRUE);
@@ -962,20 +919,6 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 
 			drag_mode = DRAG_NONE;
 			break;
-
-		case WM_NCHITTEST:
-		{
-			/* 按钮以外区域交给系统当标题栏处理：原生拖动，不依赖鼠标消息/定时器 */
-			const int sx = (int)(short)LOWORD(lParam);
-			const int sy = (int)(short)HIWORD(lParam);
-			POINT hit = WINPR_C_ARRAY_INIT;
-			hit.x = sx;
-			hit.y = sy;
-			ScreenToClient(hWnd, &hit);
-			if (floatbar_get_button(floatbar, hit.x, hit.y) == nullptr)
-				return HTCAPTION;
-			return HTCLIENT;
-		}
 
 		case WM_SETCURSOR:
 			if (LOWORD(lParam) == HTCLIENT)
@@ -1288,4 +1231,49 @@ BOOL wf_floatbar_reset_position(wfFloatBar* floatbar)
 	}
 
 	return TRUE;
+}
+
+BOOL wf_floatbar_hit_drag_area(wfFloatBar* floatbar, int screenX, int screenY)
+{
+	POINT p = WINPR_C_ARRAY_INIT;
+
+	if (!floatbar || !floatbar->hwnd)
+		return FALSE;
+
+	p.x = screenX;
+	p.y = screenY;
+	ScreenToClient(floatbar->hwnd, &p);
+
+	if ((p.x < 0) || (p.y < 0) || (p.x >= (int)floatbar->width) || (p.y >= (int)floatbar->height))
+		return FALSE;
+
+	return floatbar_get_button(floatbar, p.x, p.y) == nullptr;
+}
+
+void wf_floatbar_move_left(wfFloatBar* floatbar, LONG left)
+{
+	const LONG span = floatbar_parent_width(floatbar);
+
+	if (!floatbar || !floatbar->hwnd)
+		return;
+
+	if (left < 0)
+		left = 0;
+	if (left > span - (LONG)floatbar->width)
+		left = span - (LONG)floatbar->width;
+	if (left < 0)
+		left = 0;
+
+	floatbar->rect.left = left;
+	MoveWindow(floatbar->hwnd, left, 0, floatbar->width, floatbar->height, TRUE);
+}
+
+LONG wf_floatbar_left(wfFloatBar* floatbar)
+{
+	return floatbar ? floatbar->rect.left : 0;
+}
+
+UINT32 wf_floatbar_height(wfFloatBar* floatbar)
+{
+	return floatbar ? floatbar->height : 0;
 }
