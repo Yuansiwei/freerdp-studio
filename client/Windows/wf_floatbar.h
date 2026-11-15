@@ -1,4 +1,4 @@
-/**
+﻿/**
  * FreeRDP: A Remote Desktop Protocol Implementation
  * Windows Float Bar
  *
@@ -32,5 +32,13 @@ BOOL wf_floatbar_toggle_fullscreen(wfFloatBar* floatbar, BOOL fullscreen);
 BOOL wf_floatbar_reset_position(wfFloatBar* floatbar);
 /* Resize the bar (and its controls) to a new session scale and centre it again. */
 BOOL wf_floatbar_set_scale(wfFloatBar* floatbar, UINT32 zoom);
+
+/* 屏幕坐标是否落在浮条的可拖动区域（条内、但不在按钮上）。 */
+BOOL wf_floatbar_hit_drag_area(wfFloatBar* floatbar, int screenX, int screenY);
+/* 把浮条移动到指定左边距（子窗口坐标），内部会夹在父窗口范围内。 */
+void wf_floatbar_move_left(wfFloatBar* floatbar, LONG left);
+/* 浮条的当前左边距与宽高。 */
+LONG wf_floatbar_left(wfFloatBar* floatbar);
+UINT32 wf_floatbar_height(wfFloatBar* floatbar);
 
 #endif /* FREERDP_CLIENT_WIN_FLOATBAR_H */
