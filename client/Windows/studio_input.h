@@ -62,6 +62,10 @@ static BOOL studio_send_text_events(rdpContext* context, const WCHAR* chars, siz
 
 	for (size_t i = 0; i < count; i++)
 	{
+		/* CRLF 只产生一次换行：跳过 \r，保留 \n */
+		if (chars[i] == L'\r')
+			continue;
+
 		const BOOL down = freerdp_input_send_unicode_keyboard_event(context->input, 0, chars[i]);
 		const BOOL up =
 		    freerdp_input_send_unicode_keyboard_event(context->input, KBD_FLAGS_RELEASE, chars[i]);
