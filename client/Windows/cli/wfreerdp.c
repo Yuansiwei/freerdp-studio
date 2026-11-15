@@ -41,11 +41,34 @@
 #include <shellapi.h>
 #include <wincred.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define STUDIO_DEFAULT_PORT 3389
 #define STUDIO_HISTORY_MAX 10
+
+static void studio_logf(const char* format, ...)
+{
+	char path[MAX_PATH * 2] = WINPR_C_ARRAY_INIT;
+	const char* temp = getenv("TEMP");
+	FILE* fp = nullptr;
+	va_list args;
+
+	if (!temp || !temp[0])
+		return;
+	(void)snprintf(path, sizeof(path), "%s\\freerdp-dialog.log", temp);
+
+	fp = fopen(path, "a");
+	if (!fp)
+		return;
+
+	va_start(args, format);
+	vfprintf(fp, format, args);
+	va_end(args);
+	fputc('\n', fp);
+	fclose(fp);
+}
 /* 读取 Windows 凭据管理器里已保存的登录信息，用于预填对话框。 */
 static void studio_prefill_credentials(HWND hDlg, const char* server)
 {
@@ -210,11 +233,16 @@ static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, 
 				if (SendMessageA(combo, CB_GETCOUNT, 0, 0) == 0)
 					SetDlgItemTextA(hDlg, IDC_STUDIO_SERVER, "192.168.98.184");
 				SendMessageA(combo, CB_SETEDITSEL, 0, MAKELPARAM(0, -1));
-				{
-					HFONT titleFont = CreateFontA(-15, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0,
+					{
+					const HDC screen = GetDC(nullptr);
+					const int dpi = screen ? GetDeviceCaps(screen, LOGPIXELSY) : 96;
+					if (screen)
+						ReleaseDC(nullptr, screen);
+					const int height = -MulDiv(14, dpi, 72);
+					HFONT titleFont = CreateFontA(height, 0, 0, 0, FW_BOLD, 0, 0, 0,
 					                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
 					                                CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-					                                DEFAULT_PITCH, "Segoe UI");
+					                                DEFAULT_PITCH, "Microsoft YaHei UI");
 					if (titleFont)
 						SendDlgItemMessageA(hDlg, IDC_STUDIO_TITLE, WM_SETFONT, (WPARAM)titleFont, TRUE);
 				}
@@ -227,36 +255,46 @@ static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, 
 					studio_prefill_credentials(hDlg, current);
 				}
 			}
+				/* 默认勾选记住密码 */
+				CheckDlgButton(hDlg, IDC_STUDIO_REMEMBER, BST_CHECKED);
 			return FALSE;
 		case WM_ERASEBKGND:
 		{
-			/* 头部白底横幅 + 分隔线，模拟 mstsc 的窗口头部。 */
+			/* 头部横幅按 mstsc 实测比例绘制：占客户区 20%，#DEE8F5 -> #FAFCFE 渐变。 */
 			HDC dc = (HDC)wParam;
 			RECT rc;
-			RGBQUAD top;
-			RGBQUAD bottom;
 			RECT band;
+			const int top[3] = { 222, 232, 245 };
+			const int bottom[3] = { 250, 252, 254 };
+			const int strips = 40;
 
 			GetClientRect(hDlg, &rc);
 			FillRect(dc, &rc, (HBRUSH)(COLOR_BTNFACE + 1));
 
 			band = rc;
-			band.bottom = (rc.bottom * 42) / 100;
-			{
-				HBRUSH white = CreateSolidBrush(RGB(255, 255, 255));
-				HBRUSH tint = CreateSolidBrush(RGB(243, 247, 252));
-				RECT lower = band;
+			band.bottom = (rc.bottom * 20) / 100;
+			if (band.bottom < 2)
+				band.bottom = 2;
 
-				lower.top = band.top + ((band.bottom - band.top) * 55) / 100;
-				FillRect(dc, &band, white);
-				FillRect(dc, &lower, tint);
-				DeleteObject(white);
-				DeleteObject(tint);
+			for (int i = 0; i < strips; i++)
+			{
+				const int t = (i * 255) / (strips - 1);
+				const int r = top[0] + ((bottom[0] - top[0]) * t) / 255;
+				const int g = top[1] + ((bottom[1] - top[1]) * t) / 255;
+				const int b = top[2] + ((bottom[2] - top[2]) * t) / 255;
+				RECT strip = band;
+				HBRUSH brush = CreateSolidBrush(RGB(r, g, b));
+
+				strip.top = band.top + ((band.bottom - band.top) * i) / strips;
+				strip.bottom = band.top + ((band.bottom - band.top) * (i + 1)) / strips + 1;
+				FillRect(dc, &strip, brush);
+				DeleteObject(brush);
 			}
 
 			{
 				RECT line = band;
-				HBRUSH brush = CreateSolidBrush(RGB(197, 205, 216));
+				HBRUSH brush = CreateSolidBrush(RGB(218, 218, 218));
+
 				line.top = band.bottom;
 				line.bottom = band.bottom + 1;
 				FillRect(dc, &line, brush);
@@ -267,6 +305,8 @@ static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, 
 
 		case WM_CTLCOLORSTATIC:
 			SetBkMode((HDC)wParam, TRANSPARENT);
+			if (GetDlgCtrlID((HWND)lParam) == IDC_STUDIO_TITLE)
+				SetTextColor((HDC)wParam, RGB(0, 51, 153));
 			return (LRESULT)GetStockObject(NULL_BRUSH);
 
 		case WM_COMMAND:
@@ -316,7 +356,7 @@ static INT_PTR CALLBACK studio_connect_proc(HWND hDlg, UINT msg, WPARAM wParam, 
 					return TRUE;
 				}
 				case IDC_STUDIO_HELP:
-					MessageBoxA(hDlg, "输入要连接的计算机名称（可带端口），再填写可选凭据。地址历史会自动记录。", "远程桌面连接", MB_OK | MB_ICONINFORMATION);
+					MessageBoxA(hDlg, "输入要连接的计算机名称（可带端口），再填写可选凭据。地址历史会自动记录。", "FreeRDP", MB_OK | MB_ICONINFORMATION);
 					return TRUE;
 				case IDCANCEL:
 					EndDialog(hDlg, IDCANCEL);
@@ -482,6 +522,8 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	}
 
 	status = freerdp_client_settings_parse_command_line(settings, effectiveArgc, effectiveArgv, FALSE);
+	studio_logf("parse argc=%d status=%d argv[last]=[%s]", effectiveArgc, status,
+	             (effectiveArgv && effectiveArgc > 0) ? effectiveArgv[effectiveArgc - 1] : "(none)");
 	if (status)
 	{
 		ret = freerdp_client_settings_command_line_status_print(settings, status, argc, argv);
@@ -509,7 +551,13 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	if (!inputHost || !freerdp_settings_set_string(settings, FreeRDP_WindowTitle, inputHost))
 		goto out;
 
-	if (freerdp_client_start(context) != 0)
+	studio_logf("before start: host=[%s] port=%u user=[%s]",
+	             freerdp_settings_get_string(settings, FreeRDP_ServerHostname),
+	             freerdp_settings_get_uint32(settings, FreeRDP_ServerPort),
+	             freerdp_settings_get_string(settings, FreeRDP_Username) ? freerdp_settings_get_string(settings, FreeRDP_Username) : "(null)");
+	const int startRc = freerdp_client_start(context);
+	studio_logf("start returned %d", startRc);
+	if (startRc != 0)
 		goto out;
 
 	thread = freerdp_client_get_thread(context);
@@ -523,10 +571,34 @@ INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		}
 	}
 
+	if (ret != 0)
+	{
+		/* 把静默失败变成可读的错误提示。 */
+		const UINT32 code = freerdp_get_last_error(context);
+		const char* name = freerdp_get_last_error_name(code);
+		const char* text = freerdp_get_last_error_string(code);
+		WCHAR message[1024] = WINPR_C_ARRAY_INIT;
+		const WCHAR* hint = L"";
+
+		if (code == FREERDP_ERROR_AUTHENTICATION_FAILED ||
+		    code == FREERDP_ERROR_CONNECT_LOGON_FAILURE)
+			hint = L"\n\n提示：凭据可能已失效。可在对话框中重新输入，或删除 Windows 凭据管理器里的 TERMSRV 条目。";
+		else if (code == FREERDP_ERROR_CONNECT_ACTIVATION_TIMEOUT)
+			hint = L"\n\n提示：远端会话可能仍在释放中，稍等几十秒再试。";
+
+		(void)_snwprintf_s(message, ARRAYSIZE(message), _TRUNCATE,
+		                  L"无法建立远程桌面连接。\n\n错误：%S (%S)\n代码：0x%08X%ls",
+		                  text ? text : "未知", name ? name : "unknown", code, hint);
+
+		studio_logf("connect failed: 0x%08X %s", code, name ? name : "unknown");
+		MessageBoxW(nullptr, message, L"FreeRDP", MB_OK | MB_ICONERROR);
+	}
+
 	if (freerdp_client_stop(context) != 0)
 		goto out;
 
 out:
+	studio_logf("reached out: ret=%d", ret);
 	freerdp_client_context_free(context);
 
 	if (effectiveArgv && (effectiveArgv != argv))

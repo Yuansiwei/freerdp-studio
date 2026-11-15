@@ -9,10 +9,34 @@ static LRESULT studio_send_input(rdpContext* context, const COPYDATASTRUCT* mess
 		return 0;
 	const BOOL text = message->dwData == 0x46524431;
 	const BOOL keys = message->dwData == 0x46524432;
+	const BOOL wheel = message->dwData == 0x46524434;
 	if (message->dwData == 0x46524430)
 		return 1000 + (freerdp_is_active_state(context) ? 1 : 0) +
 		       (freerdp_settings_get_bool(context->settings, FreeRDP_UnicodeInput) ? 2 : 0) +
 		       (freerdp_settings_get_bool(context->settings, FreeRDP_SuspendInput) ? 4 : 0);
+	if (wheel)
+	{
+		/* 载荷是一个 int32 滚轮格数：正数向上，负数向下。 */
+		if (message->cbData != sizeof(INT32) || !freerdp_is_active_state(context) ||
+		    freerdp_shall_disconnect_context(context))
+			return 0;
+
+		const INT32 notches = *(const INT32*)message->lpData;
+		const INT32 count = (notches < 0) ? -notches : notches;
+		const BOOL suspended = freerdp_settings_get_bool(context->settings, FreeRDP_SuspendInput);
+		if (!freerdp_settings_set_bool(context->settings, FreeRDP_SuspendInput, FALSE))
+			return 0;
+
+		BOOL sent = TRUE;
+		const UINT16 up = PTR_FLAGS_WHEEL | 0x0078;
+		const UINT16 down = PTR_FLAGS_WHEEL | PTR_FLAGS_WHEEL_NEGATIVE | 0x0088;
+		for (INT32 i = 0; i < count && i < 50 && sent; i++)
+			sent = freerdp_input_send_mouse_event(context->input, (notches > 0) ? up : down, 0, 0);
+
+		if (!freerdp_settings_set_bool(context->settings, FreeRDP_SuspendInput, suspended))
+			return 0;
+		return sent ? 1 : 0;
+	}
 	if ((!text && !keys) || !freerdp_is_active_state(context) ||
 	    freerdp_shall_disconnect_context(context))
 		return 0;
