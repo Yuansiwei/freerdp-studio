@@ -1,4 +1,4 @@
-﻿/**
+/**
  * FreeRDP: A Remote Desktop Protocol Implementation
  * Event Handling
  *
@@ -54,6 +54,10 @@ static size_t g_pendingTypedLen = 0;
 static BOOL g_ctrlDown = FALSE;
 static BOOL g_shiftDown = FALSE;
 static BOOL g_altDown = FALSE;
+/* 远端刚按过 Ctrl+C：之后的本机 Ctrl+V 应走原生粘贴 */
+static BOOL g_remoteCopied = FALSE;
+/* 上次看到的本机剪贴板序列号，用来判断本机有没有新的复制 */
+static DWORD g_lastClipSeq = 0;
 
 static BOOL wf_scale_blt(wfContext* wfc, HDC hdc, int x, int y, int w, int h, HDC hdcSrc, int x1,
                          int y1, DWORD rop);
@@ -116,6 +120,140 @@ static void studio_paste_log(const char* format, ...)
 	va_end(args);
 	fputc('\n', fp);
 	fclose(fp);
+}
+/* 本机 SendInput 注入 Unicode 文本（与 text-typer 相同做法）：
+ * 逐字注入到客户端窗口，由客户端的键盘钩子按普通按键转发到远端。
+ * 这样走的是正常输入管线，不会被服务端在突发下改写。 */
+typedef struct
+{
+	WORD wVk;
+	WORD wScan;
+	DWORD dwFlags;
+	DWORD time;
+	ULONG_PTR dwExtraInfo;
+} studioKbdInput;
+
+typedef struct
+{
+	DWORD type;
+	DWORD pad;
+	union
+	{
+		studioKbdInput ki;
+		BYTE raw[32];
+	} u;
+} studioInput;
+
+static BOOL studio_sendinput_char(WCHAR ch)
+{
+	studioInput events[2];
+	SHORT vkState = 0;
+	BYTE vk = 0;
+
+	memset(events, 0, sizeof(events));
+
+	if (ch == L'\r')
+		return TRUE;
+
+	if (ch == L'\n' || ch == L'\t')
+	{
+		vk = (ch == L'\n') ? 0x0D : 0x09;
+		events[0].type = 1;
+		events[0].u.ki.wVk = vk;
+		events[1].type = 1;
+		events[1].u.ki.wVk = vk;
+		events[1].u.ki.dwFlags = 0x0002;
+	}
+	else
+	{
+		vkState = VkKeyScanW(ch);
+		if (vkState != -1)
+		{
+			/* 可映射字符：用真实按键，交给远端按布局解释 */
+			vk = (BYTE)(vkState & 0xFF);
+			events[0].type = 1;
+			events[0].u.ki.wVk = vk;
+			events[1].type = 1;
+			events[1].u.ki.wVk = vk;
+			events[1].u.ki.dwFlags = 0x0002;
+		}
+		else
+		{
+			events[0].type = 1;
+			events[0].u.ki.wScan = (WORD)ch;
+			events[0].u.ki.dwFlags = 0x0004;
+			events[1].type = 1;
+			events[1].u.ki.wScan = (WORD)ch;
+			events[1].u.ki.dwFlags = 0x0004 | 0x0002;
+		}
+	}
+
+	{
+		const UINT sent = SendInput(2, (INPUT*)events, sizeof(studioInput));
+		if (sent != 2)
+			studio_paste_log("SENDINPUT_FAIL: sent=%u size=%u err=%lu", sent, (unsigned)sizeof(studioInput),
+			                 (unsigned long)GetLastError());
+		return sent == 2;
+	}
+}
+
+typedef struct
+{
+	wfContext* wfc;
+	WCHAR* text;
+	size_t length;
+	unsigned delayMs;
+} studioTypingJob;
+
+static DWORD WINAPI studio_typing_thread(LPVOID arg)
+{
+	studioTypingJob* job = (studioTypingJob*)arg;
+	HWND target = NULL;
+	size_t i = 0;
+
+	if (!job)
+		return 0;
+
+	target = job->wfc->hwnd;
+
+	for (i = 0; i < job->length; i++)
+	{
+		if (GetForegroundWindow() != target)
+			break;
+
+		/* 修饰键还按着就先等（最多 1 秒），并记录卡住的原因 */
+		{
+			int waited = 0;
+			while (((GetAsyncKeyState(0x10) & 0x8000) || (GetAsyncKeyState(0x11) & 0x8000) ||
+			        (GetAsyncKeyState(0x12) & 0x8000) || (GetAsyncKeyState(0x5B) & 0x8000) ||
+			        (GetAsyncKeyState(0x5C) & 0x8000)) &&
+			       (waited < 100))
+			{
+				Sleep(10);
+				waited += 10;
+				if (GetForegroundWindow() != target)
+					goto done;
+			}
+
+			if (waited >= 100)
+				studio_paste_log("MODIFIER_WAIT_TIMEOUT shift=%d ctrl=%d alt=%d win=%d",
+				                 (int)((GetAsyncKeyState(0x10) & 0x8000) != 0),
+				                 (int)((GetAsyncKeyState(0x11) & 0x8000) != 0),
+				                 (int)((GetAsyncKeyState(0x12) & 0x8000) != 0),
+				                 (int)((GetAsyncKeyState(0x5B) & 0x8000) != 0));
+		}
+
+		if (!studio_sendinput_char(job->text[i]))
+			break;
+
+		Sleep(job->delayMs);
+	}
+
+done:
+	studio_paste_log("SENDINPUT_TYPED: sent=%zu of %zu", i, job->length);
+	free(job->text);
+	free(job);
+	return 0;
 }
 static BOOL g_typedPasteKeyDown = FALSE;
 
@@ -194,6 +332,20 @@ LRESULT CALLBACK wf_ll_kbd_proc(int nCode, WPARAM wParam, LPARAM lParam)
 						break;
 				}
 				DEBUG_KBD("keydown %d scanCode 0x%08lX flags 0x%08lX vkCode 0x%08lX",
+				/* KEYEVENTF_UNICODE 注入的按键：vkCode=0，字符在 scanCode 里。
+				 * 直接按 unicode 键盘事件转发给远端，不能当扫描码用。 */
+				if ((p->vkCode == 0) && (p->scanCode != 0))
+				{
+					const BOOL downNow2 =
+					    ((wParam == WM_KEYDOWN) || (wParam == WM_SYSKEYDOWN)) ? TRUE : FALSE;
+
+					if (!freerdp_input_send_unicode_keyboard_event(
+					        input, downNow2 ? 0 : KBD_FLAGS_RELEASE, (UINT16)p->scanCode))
+						return 1;
+
+					return 1;
+				}
+
 				          (wParam == WM_KEYDOWN), p->scanCode, p->flags, p->vkCode);
 				{
 					const BOOL downNow = ((wParam == WM_KEYDOWN) || (wParam == WM_SYSKEYDOWN)) ? TRUE : FALSE;
@@ -242,6 +394,21 @@ LRESULT CALLBACK wf_ll_kbd_proc(int nCode, WPARAM wParam, LPARAM lParam)
 				}
 
 				/* Ctrl+V：本机复制过且通道不可用时，记下文本，等 Ctrl 松开后再敲。 */
+				{
+					const DWORD seqNow = GetClipboardSequenceNumber();
+					if (seqNow != g_lastClipSeq)
+					{
+						g_lastClipSeq = seqNow;
+						g_remoteCopied = FALSE;
+					}
+				}
+
+				if (((wParam == WM_KEYDOWN) || (wParam == WM_SYSKEYDOWN)) && (p->vkCode == 'C') &&
+				    g_ctrlDown && (GetForegroundWindow() == wfc->hwnd))
+				{
+					g_remoteCopied = TRUE;
+					studio_paste_log("remote copy (Ctrl+C in session) -> native paste next");
+				}
 				if (((wParam == WM_KEYDOWN) || (wParam == WM_SYSKEYDOWN)) && (p->vkCode == 'V'))
 				{
 					studio_paste_log("V_DECIDE: ctrl=%d shift=%d alt=%d hostCopy=%d unicode=%d",
@@ -254,6 +421,7 @@ LRESULT CALLBACK wf_ll_kbd_proc(int nCode, WPARAM wParam, LPARAM lParam)
 				if (((wParam == WM_KEYDOWN) || (wParam == WM_SYSKEYDOWN)) &&
 				    (p->vkCode == 'V') && g_ctrlDown && !g_shiftDown && (GetForegroundWindow() == wfc->hwnd) &&
 				    !g_altDown && wf_cliprdr_last_copy_was_host() &&
+				    !g_remoteCopied &&
 				    freerdp_settings_get_bool(wfc->common.context.settings, FreeRDP_UnicodeInput))
 				{
 					size_t textLen = 0;
@@ -650,24 +818,39 @@ LRESULT CALLBACK wf_event_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam
 				WCHAR* typed = (WCHAR*)lParam;
 				if (typed)
 				{
-					const BOOL wasSuspended =
-					    freerdp_settings_get_bool(wfc->common.context.settings, FreeRDP_SuspendInput);
-					const BOOL unicodeOn =
-					    freerdp_settings_get_bool(wfc->common.context.settings, FreeRDP_UnicodeInput);
+					const size_t typedLen = wcslen(typed);
+					studioTypingJob* job = (studioTypingJob*)calloc(1, sizeof(studioTypingJob));
 
-					(void)freerdp_settings_set_bool(wfc->common.context.settings, FreeRDP_SuspendInput,
-					                                FALSE);
-					studio_send_text_events(&wfc->common.context, typed, wcslen(typed));
-					(void)freerdp_settings_set_bool(wfc->common.context.settings, FreeRDP_SuspendInput,
-					                                wasSuspended);
+					studio_paste_log("HANDLER len=%zu", typedLen);
 
-					studio_paste_log("TYPED_PASTE: sent len=%zu unicode=%d wasSuspended=%d",
-					                 wcslen(typed), (int)unicodeOn, (int)wasSuspended);
+					if (job)
+					{
+						const char* delayEnv = getenv("STUDIO_TYPE_DELAY");
+						HANDLE thread = NULL;
+
+						job->wfc = wfc;
+						job->text = (WCHAR*)malloc((typedLen + 1) * sizeof(WCHAR));
+						if (job->text)
+						{
+							memcpy(job->text, typed, (typedLen + 1) * sizeof(WCHAR));
+							job->length = typedLen;
+							job->delayMs =
+							    (delayEnv && delayEnv[0]) ? (unsigned)strtoul(delayEnv, NULL, 10) : 8;
+							thread = CreateThread(NULL, 0, studio_typing_thread, job, 0, NULL);
+						}
+						if (!thread)
+						{
+							free(job->text);
+							free(job);
+						}
+						else
+							CloseHandle(thread);
+					}
+
 					free(typed);
 				}
 				break;
 			}
-
 			case WM_MOVE:
 				if (!wfc->disablewindowtracking)
 				{
