@@ -263,21 +263,117 @@ static BOOL studio_fill_span_monitors(wfContext* wfc)
 }
 
 /* Resolve the monitor that should host the session and report its effective DPI. */
+/* 记住上次使用的显示器序号，避免每次启动落到不同屏幕。 */
+static HMONITOR g_studioMonitors[16];
+static int g_studioMonitorCount = 0;
+
+static BOOL CALLBACK studio_collect_monitors(HMONITOR mon, HDC dc, LPRECT rect, LPARAM data)
+{
+	(void)dc;
+	(void)rect;
+	(void)data;
+
+	if (g_studioMonitorCount < (int)(sizeof(g_studioMonitors) / sizeof(g_studioMonitors[0])))
+		g_studioMonitors[g_studioMonitorCount++] = mon;
+
+	return TRUE;
+}
+
+static void studio_monitor_config_path(char* path, size_t length)
+{
+	const char* base = getenv("LOCALAPPDATA");
+
+	path[0] = '\0';
+	if (!base || !base[0])
+		return;
+
+	(void)snprintf(path, length, "%s\\FreeRDP\\studio-monitor.txt", base);
+}
+
+static void studio_load_monitor_index(int* index)
+{
+	char path[512] = WINPR_C_ARRAY_INIT;
+	FILE* fp = NULL;
+	int value = -1;
+
+	*index = -1;
+	studio_monitor_config_path(path, sizeof(path));
+	if (!path[0])
+		return;
+
+	fp = fopen(path, "rb");
+	if (!fp)
+		return;
+
+	if (fscanf_s(fp, "%d", &value) != 1)
+		fp = NULL;
+
+	if (fp)
+		fclose(fp);
+
+	if (value >= 0 && value < 16)
+		*index = value;
+}
+
+static void studio_save_monitor_index(int index)
+{
+	char path[512] = WINPR_C_ARRAY_INIT;
+	char directory[512] = WINPR_C_ARRAY_INIT;
+	const char* base = getenv("LOCALAPPDATA");
+	FILE* fp = NULL;
+
+	if (index < 0 || !base || !base[0])
+		return;
+
+	studio_monitor_config_path(path, sizeof(path));
+	if (!path[0])
+		return;
+
+	(void)snprintf(directory, sizeof(directory), "%s\\FreeRDP", base);
+	(void)CreateDirectoryA(directory, NULL);
+
+	fp = fopen(path, "wb");
+	if (!fp)
+		return;
+
+	(void)fprintf(fp, "%d", index);
+	fclose(fp);
+}
 static UINT32 studio_resolve_target_monitor(wfContext* wfc)
 {
 	MONITORINFO mi = WINPR_C_ARRAY_INIT;
 	POINT pt = WINPR_C_ARRAY_INIT;
 	HMONITOR mon = nullptr;
+	int savedIndex = -1;
 
 	mi.cbSize = sizeof(mi);
 
-	if (wfc->hwnd)
-		mon = MonitorFromWindow(wfc->hwnd, MONITOR_DEFAULTTOPRIMARY);
-	else if (GetCursorPos(&pt))
-		mon = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+	g_studioMonitorCount = 0;
+	EnumDisplayMonitors(NULL, NULL, studio_collect_monitors, 0);
+
+	studio_load_monitor_index(&savedIndex);
+	if (savedIndex >= 0 && savedIndex < g_studioMonitorCount)
+		mon = g_studioMonitors[savedIndex];
+
+	if (!mon)
+	{
+		if (wfc->hwnd)
+			mon = MonitorFromWindow(wfc->hwnd, MONITOR_DEFAULTTOPRIMARY);
+		else if (GetCursorPos(&pt))
+			mon = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+	}
 
 	if (!mon || !GetMonitorInfo(mon, &mi))
 		return USER_DEFAULT_SCREEN_DPI;
+
+	for (int index = 0; index < g_studioMonitorCount; index++)
+	{
+		if (g_studioMonitors[index] == mon)
+		{
+			studio_save_monitor_index(index);
+			break;
+		}
+	}
 
 	wfc->studioMonitorRect = mi.rcMonitor;
 	wfc->studioMonitorSet = TRUE;

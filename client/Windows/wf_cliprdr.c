@@ -1,4 +1,4 @@
-/**
+﻿/**
  * FreeRDP: A Remote Desktop Protocol Implementation
  * Windows Clipboard Redirection
  *
@@ -138,7 +138,34 @@ typedef struct
 	fnAddClipboardFormatListener AddClipboardFormatListener;
 	fnRemoveClipboardFormatListener RemoveClipboardFormatListener;
 	fnGetUpdatedClipboardFormats GetUpdatedClipboardFormats;
+
+	BOOL remoteHasText;
+	BOOL lastCopyHost;
 } wfClipboard;
+
+/* 剪贴板通道确定性日志：记录服务器请求、本机数据长度、通道返回码。 */
+static void clip_log(const char* format, ...)
+{
+	char path[MAX_PATH * 2] = WINPR_C_ARRAY_INIT;
+	const char* temp = getenv("TEMP");
+	FILE* fp = NULL;
+	va_list args;
+
+	if (!temp || !temp[0])
+		return;
+
+	(void)snprintf(path, sizeof(path), "%s\\studio-clip.log", temp);
+	fp = fopen(path, "a");
+	if (!fp)
+		return;
+
+	va_start(args, format);
+	vfprintf(fp, format, args);
+	va_end(args);
+	fputc('\n', fp);
+	fclose(fp);
+}
+static wfClipboard* g_activeClipboard = NULL;
 
 #define WM_CLIPRDR_MESSAGE (WM_USER + 156)
 #define OLE_SETCLIPBOARD 1
@@ -1393,6 +1420,24 @@ static LRESULT CALLBACK cliprdr_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM 
 		case WM_CLIPBOARDUPDATE:
 			DEBUG_CLIPRDR("info: WM_CLIPBOARDUPDATE");
 
+			if (clipboard)
+				clipboard->lastCopyHost = TRUE;
+			{
+				const char* temp = getenv("TEMP");
+				if (temp && temp[0])
+				{
+					char logPath[MAX_PATH * 2] = WINPR_C_ARRAY_INIT;
+					FILE* logFp = NULL;
+					(void)snprintf(logPath, sizeof(logPath), "%s\\\\studio-paste.log", temp);
+					logFp = fopen(logPath, "a");
+					if (logFp)
+					{
+						fputs("clipboard updated on host -> lastCopyHost=TRUE\\n", logFp);
+						fclose(logFp);
+					}
+				}
+			}
+
 			if (clipboard->sync)
 			{
 				if ((GetClipboardOwner() != clipboard->hwnd) &&
@@ -1834,6 +1879,7 @@ static UINT wf_cliprdr_monitor_ready(CliprdrClientContext* context,
 		return ERROR_INTERNAL_ERROR;
 
 	clipboard->sync = TRUE;
+	clip_log("MONITOR_READY: clipboard channel synced");
 	rc = wf_cliprdr_send_client_capabilities(clipboard);
 
 	if (rc != CHANNEL_RC_OK)
@@ -1882,6 +1928,7 @@ static UINT wf_cliprdr_server_format_list(CliprdrClientContext* context,
                                           const CLIPRDR_FORMAT_LIST* formatList)
 {
 	UINT rc = ERROR_INTERNAL_ERROR;
+	BOOL hasText = FALSE;
 	wfClipboard* clipboard = (wfClipboard*)context->custom;
 
 	if (!clear_format_map(clipboard))
@@ -1895,6 +1942,9 @@ static UINT wf_cliprdr_server_format_list(CliprdrClientContext* context,
 		CLIPRDR_FORMAT* format = &(formatList->formats[i]);
 		formatMapping* mapping = &(clipboard->format_mappings[i]);
 		mapping->remote_format_id = format->formatId;
+
+		if (format->formatId == CF_UNICODETEXT || format->formatId == CF_TEXT)
+			hasText = TRUE;
 
 		if (format->formatName)
 		{
@@ -1912,6 +1962,12 @@ static UINT wf_cliprdr_server_format_list(CliprdrClientContext* context,
 		clipboard->map_size++;
 	}
 
+
+	clipboard->remoteHasText = hasText;
+	clip_log("SERVER_FORMAT_LIST: formats=%u hasText=%d", formatList->numFormats, (int)hasText);
+
+	if (hasText)
+		clipboard->lastCopyHost = FALSE;
 	if (file_transferring(clipboard))
 	{
 		if (PostMessage(clipboard->hwnd, WM_CLIPRDR_MESSAGE, OLE_SETCLIPBOARD, 0))
@@ -2173,6 +2229,7 @@ wf_cliprdr_server_format_data_request(CliprdrClientContext* context,
 	else
 	{
 		res = wf_cliprdr_tryopen(clipboard, requestedFormatId, &requestedFormatData);
+	clip_log("FORMAT_DATA_REQUEST: formatId=%u dataLen=%lld", (unsigned)requestedFormatId, (long long)res);
 	}
 
 	UINT rc = ERROR_INTERNAL_ERROR;
@@ -2186,6 +2243,7 @@ wf_cliprdr_server_format_data_request(CliprdrClientContext* context,
 		};
 
 		rc = clipboard->context->ClientFormatDataResponse(clipboard->context, &response);
+	clip_log("FORMAT_DATA_RESPONSE: formatId=%u bytes=%lld rc=%u", (unsigned)requestedFormatId, (long long)res, (unsigned)rc);
 	}
 	else
 	{
@@ -2488,8 +2546,10 @@ BOOL wf_cliprdr_init(wfContext* wfc, CliprdrClientContext* cliprdr)
 		return FALSE;
 
 	clipboard = wfc->clipboard;
+	clip_log("CLIPRDR_INIT: clipboard context created");
 	clipboard->wfc = wfc;
 	clipboard->context = cliprdr;
+	g_activeClipboard = clipboard;
 	clipboard->channels = context->channels;
 	clipboard->sync = FALSE;
 	clipboard->map_capacity = 32;
@@ -2553,6 +2613,7 @@ BOOL wf_cliprdr_uninit(wfContext* wfc, CliprdrClientContext* cliprdr)
 		return FALSE;
 
 	cliprdr->custom = nullptr;
+	g_activeClipboard = NULL;
 
 	if (clipboard->hwnd)
 		PostMessage(clipboard->hwnd, WM_QUIT, 0, 0);
@@ -2574,4 +2635,50 @@ BOOL wf_cliprdr_uninit(wfContext* wfc, CliprdrClientContext* cliprdr)
 	free(clipboard->format_mappings);
 	free(clipboard);
 	return TRUE;
+}
+
+BOOL wf_cliprdr_remote_has_text(void)
+{
+	return g_activeClipboard ? g_activeClipboard->remoteHasText : FALSE;
+}
+
+WCHAR* wf_cliprdr_take_host_text(size_t* length)
+{
+	WCHAR* copy = NULL;
+	HANDLE handle = NULL;
+
+	if (length)
+		*length = 0;
+
+	if (!OpenClipboard(NULL))
+		return NULL;
+
+	handle = GetClipboardData(CF_UNICODETEXT);
+	if (handle)
+	{
+		const WCHAR* text = (const WCHAR*)GlobalLock(handle);
+		if (text)
+		{
+			const size_t len = wcslen(text);
+			if (len > 0 && len < 1000000)
+			{
+				copy = (WCHAR*)malloc((len + 1) * sizeof(WCHAR));
+				if (copy)
+				{
+					memcpy(copy, text, (len + 1) * sizeof(WCHAR));
+					if (length)
+						*length = len;
+				}
+			}
+			GlobalUnlock(handle);
+		}
+	}
+
+	CloseClipboard();
+	return copy;
+}
+
+BOOL wf_cliprdr_last_copy_was_host(void)
+{
+	return g_activeClipboard ? g_activeClipboard->lastCopyHost : FALSE;
 }

@@ -22,6 +22,7 @@
 #include <freerdp/config.h>
 
 #include <stdio.h>
+#include <stdarg.h>
 
 #include <winpr/assert.h>
 #include <winpr/sysinfo.h>
@@ -37,12 +38,22 @@
 #include <windowsx.h>
 
 #include "studio_input.h"
+#include "wf_cliprdr.h"
 
 static HWND g_focus_hWnd = nullptr;
 static HWND g_main_hWnd = nullptr;
 static HWND g_parent_hWnd = nullptr;
 
 #define RESIZE_MIN_DELAY 200 /* minimum delay in ms between two resizes */
+
+/* 本机剪贴板文本 → 在客户端主线程敲进远端 */
+#define WM_STUDIO_TYPED_PASTE (WM_APP + 77)
+
+static WCHAR* g_pendingTypedText = NULL;
+static size_t g_pendingTypedLen = 0;
+static BOOL g_ctrlDown = FALSE;
+static BOOL g_shiftDown = FALSE;
+static BOOL g_altDown = FALSE;
 
 static BOOL wf_scale_blt(wfContext* wfc, HDC hdc, int x, int y, int w, int h, HDC hdcSrc, int x1,
                          int y1, DWORD rop);
@@ -84,6 +95,29 @@ static void release_ctrl_alt(rdpInput* input)
 		g_keystates[RDP_SCANCODE_CODE(keys[x])] = FALSE;
 	}
 }
+
+static void studio_paste_log(const char* format, ...)
+{
+	char path[MAX_PATH * 2] = WINPR_C_ARRAY_INIT;
+	const char* temp = getenv("TEMP");
+	FILE* fp = NULL;
+	va_list args;
+
+	if (!temp || !temp[0])
+		return;
+
+	(void)snprintf(path, sizeof(path), "%s\\studio-paste.log", temp);
+	fp = fopen(path, "a");
+	if (!fp)
+		return;
+
+	va_start(args, format);
+	vfprintf(fp, format, args);
+	va_end(args);
+	fputc('\n', fp);
+	fclose(fp);
+}
+static BOOL g_typedPasteKeyDown = FALSE;
 
 LRESULT CALLBACK wf_ll_kbd_proc(int nCode, WPARAM wParam, LPARAM lParam)
 {
@@ -161,6 +195,38 @@ LRESULT CALLBACK wf_ll_kbd_proc(int nCode, WPARAM wParam, LPARAM lParam)
 				}
 				DEBUG_KBD("keydown %d scanCode 0x%08lX flags 0x%08lX vkCode 0x%08lX",
 				          (wParam == WM_KEYDOWN), p->scanCode, p->flags, p->vkCode);
+				{
+					const BOOL downNow = ((wParam == WM_KEYDOWN) || (wParam == WM_SYSKEYDOWN)) ? TRUE : FALSE;
+					switch (p->vkCode)
+					{
+						case VK_LCONTROL:
+						case VK_RCONTROL:
+						case VK_CONTROL:
+							g_ctrlDown = downNow;
+							break;
+						case VK_LSHIFT:
+						case VK_RSHIFT:
+						case VK_SHIFT:
+							g_shiftDown = downNow;
+							break;
+						case VK_LMENU:
+						case VK_RMENU:
+						case VK_MENU:
+							g_altDown = downNow;
+							break;
+						default:
+							break;
+					}
+				}
+				if ((p->vkCode == 'V') &&
+				    ((g_keystates[0x1D] || (GetAsyncKeyState(VK_CONTROL) & 0x8000)) != 0))
+				{
+					studio_paste_log("V-key: ctrl=%d shift=%d alt=%d lastHost=%d unicode=%d",
+					                 (int)g_keystates[0x1D], (int)g_keystates[0x2A],
+					                 (int)g_keystates[0x38], (int)wf_cliprdr_last_copy_was_host(),
+					                 (int)freerdp_settings_get_bool(wfc->common.context.settings,
+					                                                FreeRDP_UnicodeInput));
+				}
 
 				if (wfc->fullscreen_toggle && (p->vkCode == VK_RETURN || p->vkCode == VK_CANCEL))
 				{
@@ -173,6 +239,54 @@ LRESULT CALLBACK wf_ll_kbd_proc(int nCode, WPARAM wParam, LPARAM lParam)
 							return 1;
 						}
 					}
+				}
+
+				/* Ctrl+V：本机复制过且通道不可用时，记下文本，等 Ctrl 松开后再敲。 */
+				if (((wParam == WM_KEYDOWN) || (wParam == WM_SYSKEYDOWN)) &&
+				    (p->vkCode == 'V') && g_ctrlDown && !g_shiftDown &&
+				    !g_altDown && wf_cliprdr_last_copy_was_host() &&
+				    freerdp_settings_get_bool(wfc->common.context.settings, FreeRDP_UnicodeInput))
+				{
+					size_t textLen = 0;
+					WCHAR* hostText = wf_cliprdr_take_host_text(&textLen);
+
+					studio_paste_log("Ctrl+V intercepted: lastHost=%d textLen=%zu",
+					                 (int)wf_cliprdr_last_copy_was_host(), textLen);
+
+					if (hostText && textLen > 0)
+					{
+						free(g_pendingTypedText);
+						g_pendingTypedText = hostText;
+						g_pendingTypedLen = textLen;
+						g_typedPasteKeyDown = TRUE;
+						return 1;
+					}
+
+					free(hostText);
+				}
+
+				/* Ctrl 松开时，才把字符发出去，避免带 Ctrl 修饰。 */
+				if (((wParam == WM_KEYUP) || (wParam == WM_SYSKEYUP)) &&
+				    ((p->vkCode == VK_CONTROL) || (p->vkCode == VK_LCONTROL) ||
+				     (p->vkCode == VK_RCONTROL)) &&
+				    g_pendingTypedText && wfc->hwnd)
+				{
+					WCHAR* text = g_pendingTypedText;
+					g_pendingTypedText = NULL;
+					g_pendingTypedLen = 0;
+					g_typedPasteKeyDown = FALSE;
+
+					if (!PostMessage(wfc->hwnd, WM_STUDIO_TYPED_PASTE, 0, (LPARAM)text))
+						free(text);
+
+					return 1;
+				}
+
+				if (((wParam == WM_KEYUP) || (wParam == WM_SYSKEYUP)) && (p->vkCode == 'V') &&
+				    g_typedPasteKeyDown)
+				{
+					g_typedPasteKeyDown = FALSE;
+					return 1;
 				}
 
 				if (rdp_scancode == RDP_SCANCODE_NUMLOCK_EXTENDED)
@@ -522,6 +636,18 @@ LRESULT CALLBACK wf_event_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam
 
 		switch (Msg)
 		{
+			case WM_STUDIO_TYPED_PASTE:
+			{
+				WCHAR* typed = (WCHAR*)lParam;
+				if (typed)
+				{
+					studio_send_text_events(&wfc->common.context, typed, wcslen(typed));
+					studio_paste_log("TYPED_PASTE: sent len=%zu", wcslen(typed));
+					free(typed);
+				}
+				break;
+			}
+
 			case WM_MOVE:
 				if (!wfc->disablewindowtracking)
 				{
