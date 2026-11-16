@@ -1,14 +1,15 @@
 ﻿{
     "bundle":  "rdpbridge-3.33.1-20261116",
     "kind":  "deployed-runtime",
-    "capturedAt":  "2026-11-16T23:15:22",
-    "capturedFrom":  "C:\\Studio\\RdpBridge",
+    "capturedAt":  "2026-11-17T00:24:47",
+    "capturedFrom":  "C:\\Users\\Studio\\Documents\\deepseek-harness\\default-workspace\\freerdp-studio\\dist\\rdpbridge-3.33.1-20261116",
     "capturedHost":  "STUDIO-WIN",
     "sourceBranch":  "studio-rdp-client",
-    "sourceHead":  "726432d8d4c6bbc3e82acc1780cf7f4f5848ae66",
-    "sourceDescribe":  "3.33.1-38-g726432d",
-    "provenanceNote":  "The deployed binaries do not embed a commit id. The commit recorded here is the branch HEAD at capture time, NOT proof of what produced these binaries. See _versioning/README.md (issue P1).",
-    "totalBytes":  10385967,
+    "sourceHead":  "953f0cdc14a9ae48ec1808fdad9d430f8a5efb6f",
+    "sourceDescribe":  "deploy-rdpbridge-20261116-7-g953f0cd",
+    "mixedBuild":  true,
+    "provenanceNote":  "Client DLLs are the 2026-11-16 22:36 build and do NOT contain input kind 0x46524436. SendRdpInput.exe was rebuilt from studio-tools/SendRdpInput.cs on 2026-11-17, so it accepts --capture/--wheel/--move/--click/--rclick/--down/--up; the five pointer commands will be rejected by the old client until wfreerdp-client3.dll is rebuilt.",
+    "totalBytes":  10399579,
     "files":  [
                   {
                       "name":  "freerdp3.dll",
@@ -51,12 +52,20 @@
                       "sha256":  "FDCE0EA833ED8A758C40B1B2B6513BD60A5B7E1CD0CA724274A7AD14B2BFAE50"
                   },
                   {
+                      "name":  "MANIFEST.json",
+                      "bytes":  5256,
+                      "fileVersion":  null,
+                      "productVersion":  null,
+                      "modified":  "2026-11-17 00:24:15",
+                      "sha256":  "B52103E4868D1E6C0877707B77A9EDE6F96572D5335F5536BB6E0CD455462927"
+                  },
+                  {
                       "name":  "SendRdpInput.exe",
-                      "bytes":  12288,
+                      "bytes":  12800,
                       "fileVersion":  "0.0.0.0",
                       "productVersion":  "0.0.0.0",
-                      "modified":  "2026-11-16 22:36:57",
-                      "sha256":  "0F7CD9C832BD957BE0C114AD85C621ADB2E99D48FB75616C08018BA49EFE35AE"
+                      "modified":  "2026-11-17 00:24:47",
+                      "sha256":  "0D4E21EE6B203ABF26481D6F3D3643ADDF981E3178EE255A21BCA761134B6404"
                   },
                   {
                       "name":  "wfreerdp.exe",
@@ -84,11 +93,11 @@
                   },
                   {
                       "name":  "使用说明.md",
-                      "bytes":  10287,
+                      "bytes":  18131,
                       "fileVersion":  null,
                       "productVersion":  null,
-                      "modified":  "2026-11-16 22:36:57",
-                      "sha256":  "3F99C9271E3C541B9A0A3F4A2E21D027B7984A11A784BB5418F51FF115DA967E"
+                      "modified":  "2026-11-17 00:15:48",
+                      "sha256":  "4E99699265840A1DCA12A31C499F89EBE503DBFCF3B2952EFCF2154DE145CF61"
                   }
               ]
 }
