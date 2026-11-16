@@ -26,11 +26,40 @@ internal static class SendRdpInput
         {"S",0x1F}, {"T",0x14}, {"U",0x16}, {"V",0x2F}, {"W",0x11}, {"X",0x2D},
         {"Y",0x15}, {"Z",0x2C}
     };
+    const string Usage =
+        "Usage: SendRdpInput --target HOST:PORT --text \"text\" | --key CTRL+A | --status query | --keepalive 1\n" +
+        "       | --wheel -3 | --capture out.bmp\n" +
+        "       | --move X,Y | --click X,Y | --rclick X,Y | --down X,Y | --up X,Y";
+
+    // pointer action bits understood by kind 0x46524436
+    const uint PTR_MOVE = 1, PTR_LEFT_DOWN = 2, PTR_LEFT_UP = 4, PTR_RIGHT_DOWN = 8, PTR_RIGHT_UP = 16;
+
+    static bool TryPoint(string text, out int x, out int y)
+    {
+        x = 0; y = 0;
+        string[] parts = text.Split(',');
+        if (parts.Length != 2) return false;
+        if (!int.TryParse(parts[0].Trim(), out x)) return false;
+        if (!int.TryParse(parts[1].Trim(), out y)) return false;
+        return x >= 0 && y >= 0 && x <= 65535 && y <= 65535;
+    }
+
+    static byte[] Le32(uint value)
+    {
+        byte[] b = new byte[4];
+        BitConverter.GetBytes(value).CopyTo(b, 0);
+        return b;
+    }
+
     static int Main(string[] args)
     {
         try {
-            if(args.Length!=4 || args[0]!="--target" || (args[2]!="--text" && args[2]!="--key" && args[2]!="--status" && args[2]!="--keepalive")) {
-                Console.Error.WriteLine("Usage: SendRdpInput --target HOST:PORT --text \"text\" | --key CTRL+A | --status query"); return 2;
+            var commands = new HashSet<string>(StringComparer.Ordinal) {
+                "--text","--key","--status","--keepalive","--wheel","--capture",
+                "--move","--click","--rclick","--down","--up"
+            };
+            if(args.Length!=4 || args[0]!="--target" || !commands.Contains(args[2])) {
+                Console.Error.WriteLine(Usage); return 2;
             }
             // The client window is titled with the host only (no port, no prefix).
             string titleWanted=args[1];
@@ -38,15 +67,18 @@ internal static class SendRdpInput
                 titleWanted=titleWanted.Substring(0,titleWanted.LastIndexOf(':'));
             else if(titleWanted.StartsWith("[") && titleWanted.Contains("]:"))
                 titleWanted=titleWanted.Substring(1,titleWanted.IndexOf("]:")-1);
+
             byte[] payload;
             uint kind;
-            if(args[2]=="--keepalive") {payload=new byte[4];kind=0x46524433;}
-            else if(args[2]=="--status") {payload=new byte[4];kind=0x46524430;}
+            bool wantsStatus=false, wantsKeepalive=false;
+
+            if(args[2]=="--keepalive") {payload=new byte[4];kind=0x46524433;wantsKeepalive=true;}
+            else if(args[2]=="--status") {payload=new byte[4];kind=0x46524430;wantsStatus=true;}
             else if(args[2]=="--text") {
                 if(args[3].Length==0 || args[3].Length>4096 || args[3].IndexOfAny(new[]{'\0','\r','\n','\t'})>=0)
                     throw new ArgumentException("Use nonempty text up to 4096 UTF-16 units. Send control keys separately.");
                 payload=Encoding.Unicode.GetBytes(args[3]); kind=0x46524431;
-            } else {
+            } else if(args[2]=="--key") {
                 string[] parts=args[3].Split('+');
                 if(parts.Length==0 || parts.Length>4) throw new ArgumentException("Invalid key combination.");
                 var events=new List<uint>();
@@ -61,7 +93,30 @@ internal static class SendRdpInput
                 payload=new byte[events.Count*4];
                 for(int i=0;i<events.Count;i++) BitConverter.GetBytes(events[i]).CopyTo(payload,i*4);
                 kind=0x46524432;
+            } else if(args[2]=="--wheel") {
+                int notches;
+                if(!int.TryParse(args[3].Trim(), out notches)) throw new ArgumentException("Wheel notches must be an integer.");
+                if(notches==0 || notches<-50 || notches>50) throw new ArgumentException("Wheel notches must be within -50..50.");
+                payload=Le32((uint)notches); kind=0x46524434;
+            } else if(args[2]=="--capture") {
+                if(args[3].Length==0) throw new ArgumentException("Capture needs an output .bmp path.");
+                payload=Encoding.UTF8.GetBytes(args[3]); kind=0x46524435;
+            } else {
+                int x, y;
+                if(!TryPoint(args[3], out x, out y)) throw new ArgumentException("Pointer arguments must be X,Y with non-negative integers.");
+                uint action =
+                    args[2]=="--move"   ? PTR_MOVE :
+                    args[2]=="--click"  ? (PTR_LEFT_DOWN | PTR_LEFT_UP) :
+                    args[2]=="--rclick" ? (PTR_RIGHT_DOWN | PTR_RIGHT_UP) :
+                    args[2]=="--down"   ? PTR_LEFT_DOWN :
+                                          PTR_LEFT_UP;
+                payload=new byte[12];
+                BitConverter.GetBytes(x).CopyTo(payload,0);
+                BitConverter.GetBytes(y).CopyTo(payload,4);
+                BitConverter.GetBytes(action).CopyTo(payload,8);
+                kind=0x46524436;
             }
+
             var windows=new List<IntPtr>();
             EnumWindows(delegate(IntPtr window,IntPtr unused) {
                 var title=new StringBuilder(256); GetWindowText(window,title,title.Capacity);
@@ -91,12 +146,12 @@ internal static class SendRdpInput
                 if(SendMessageTimeout(windows[0],0x004A,IntPtr.Zero,ref data,0x22,15000,out ack)==IntPtr.Zero)
                     throw new InvalidOperationException("Input call failed or timed out. Outcome may be partial. Check remote screen before retrying. Win32="+Marshal.GetLastWin32Error());
                 ulong result=ack.ToUInt64();
-                if(args[2]=="--keepalive") {
+                if(wantsKeepalive) {
                     if(result<1000) throw new InvalidOperationException("Keepalive endpoint unavailable.");
                     Console.WriteLine("IntervalSeconds=120 F15PairsSent="+(result-1000));
                     return 0;
                 }
-                if(args[2]=="--status") {
+                if(wantsStatus) {
                     if(result<1000 || result>1007) throw new InvalidOperationException("Status endpoint unavailable.");
                     Console.WriteLine("Connected="+(((result-1000)&1)!=0)+" Unicode="+(((result-1000)&2)!=0)+" InputSuspended="+(((result-1000)&4)!=0)+" TargetInBackground="+(before!=windows[0]));
                     return 0;
@@ -109,4 +164,3 @@ internal static class SendRdpInput
         }catch(Exception error){Console.Error.WriteLine(error.Message);return 1;}
     }
 }
-
