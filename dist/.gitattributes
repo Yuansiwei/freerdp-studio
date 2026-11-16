@@ -1,0 +1,6 @@
+# runtime binaries: never normalize line endings, never attempt a text diff
+*.exe  -text -diff
+*.dll  -text -diff
+# documentation stays text so it renders in diffs and on GitHub
+*.md   text
+*.json text
