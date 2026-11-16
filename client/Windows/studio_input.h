@@ -95,6 +95,115 @@ static BOOL studio_send_text_events(rdpContext* context, const WCHAR* chars, siz
 
 	return success;
 }
+/* 把客户端主画面（服务端推来的最新一帧）保存成 32 位 BMP。
+ * 数据源是 wfc->primary，最小化时也保持更新，因此可用于后台截图。 */
+static void studio_capture_log(const char* fmt, ...)
+{
+	char path[MAX_PATH * 2] = WINPR_C_ARRAY_INIT;
+	const char* temp = getenv("TEMP");
+	FILE* fp = NULL;
+	va_list ap;
+
+	if (!temp || !temp[0])
+		return;
+	(void)snprintf(path, sizeof(path), "%s\\studio-capture.log", temp);
+	fp = fopen(path, "a");
+	if (!fp)
+		return;
+	va_start(ap, fmt);
+	vfprintf(fp, fmt, ap);
+	va_end(ap);
+	fputc('\n', fp);
+	fclose(fp);
+}
+static BOOL studio_capture_primary(rdpContext* context, const char* path)
+{
+	wfContext* wfc = (wfContext*)context;
+	wfBitmap* primary = NULL;
+	BITMAPINFO info = WINPR_C_ARRAY_INIT;
+	BITMAPFILEHEADER header = WINPR_C_ARRAY_INIT;
+	HDC dc = NULL;
+	HGDIOBJ old = NULL;
+	BYTE* pixels = NULL;
+	FILE* fp = NULL;
+	UINT32 width = 0;
+	UINT32 height = 0;
+	DWORD stride = 0;
+	DWORD imageSize = 0;
+	BOOL rc = FALSE;
+
+	if (!wfc || !path || !path[0])
+		return FALSE;
+
+	primary = wfc->primary;
+	studio_capture_log("primary=%p hdc=%p bitmap=%p", (void*)primary,
+	                   primary ? (void*)primary->hdc : NULL,
+	                   primary ? (void*)primary->bitmap : NULL);
+	if (!primary || !primary->hdc || !primary->bitmap)
+		return FALSE;
+
+	{
+		BITMAP bm = WINPR_C_ARRAY_INIT;
+
+		/* rdpBitmap 的 width/height 在 Windows 客户端里不维护，直接问位图对象。 */
+		if (GetObject(primary->bitmap, sizeof(bm), &bm) == sizeof(bm))
+		{
+			width = (UINT32)bm.bmWidth;
+			height = (UINT32)bm.bmHeight;
+		}
+
+		if ((width == 0) || (height == 0))
+		{
+			width = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopWidth);
+			height = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopHeight);
+		}
+	}
+	if ((width == 0) || (height == 0) || (width > 16384) || (height > 16384))
+		return FALSE;
+
+	stride = width * 4;
+	imageSize = stride * height;
+	pixels = (BYTE*)malloc(imageSize);
+	if (!pixels)
+		return FALSE;
+
+	info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+	info.bmiHeader.biWidth = (LONG)width;
+	info.bmiHeader.biHeight = -(LONG)height; /* 自顶向下 */
+	info.bmiHeader.biPlanes = 1;
+	info.bmiHeader.biBitCount = 32;
+	info.bmiHeader.biCompression = BI_RGB;
+
+	/* 位图已选入 primary->hdc，不能再选进第二个 DC；直接用它的 DC 取像素。 */
+	if (GetDIBits(primary->hdc, primary->bitmap, 0, height, pixels, &info, DIB_RGB_COLORS) !=
+	    (int)height)
+		goto out;
+
+	header.bfType = 0x4D42; /* 'BM' */
+	header.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+	header.bfSize = header.bfOffBits + imageSize;
+
+	fp = fopen(path, "wb");
+	if (!fp)
+		goto out;
+
+	if (fwrite(&header, sizeof(header), 1, fp) != 1)
+		goto out;
+	if (fwrite(&info.bmiHeader, sizeof(info.bmiHeader), 1, fp) != 1)
+		goto out;
+	if (fwrite(pixels, imageSize, 1, fp) != 1)
+		goto out;
+
+	rc = TRUE;
+	studio_capture_log("SAVED %s size=%lu", path, (unsigned long)imageSize);
+
+out:
+	if (fp)
+		fclose(fp);
+
+	free(pixels);
+	return rc;
+}
 static LRESULT studio_send_input(rdpContext* context, const COPYDATASTRUCT* message)
 {
 	if (!message || !message->lpData || message->cbData == 0 || message->cbData > 8192)
@@ -102,6 +211,18 @@ static LRESULT studio_send_input(rdpContext* context, const COPYDATASTRUCT* mess
 	const BOOL text = message->dwData == 0x46524431;
 	const BOOL keys = message->dwData == 0x46524432;
 	const BOOL wheel = message->dwData == 0x46524434;
+	if (message->dwData == 0x46524435)
+	{
+		/* 载荷是 BMP 输出路径（UTF-8，NUL 结尾）。 */
+		char path[MAX_PATH * 2] = WINPR_C_ARRAY_INIT;
+		size_t length = message->cbData;
+
+		if (length >= sizeof(path))
+			length = sizeof(path) - 1;
+		memcpy(path, message->lpData, length);
+		path[length] = '\0';
+		return studio_capture_primary(context, path) ? 1 : 0;
+	}
 	if (message->dwData == 0x46524430)
 		return 1000 + (freerdp_is_active_state(context) ? 1 : 0) +
 		       (freerdp_settings_get_bool(context->settings, FreeRDP_UnicodeInput) ? 2 : 0) +
