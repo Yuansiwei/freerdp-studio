@@ -1,4 +1,4 @@
-/* Local, explicit input endpoint for this FreeRDP connection. */
+﻿/* Local, explicit input endpoint for this FreeRDP connection. */
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <string.h>
@@ -227,6 +227,40 @@ static LRESULT studio_send_input(rdpContext* context, const COPYDATASTRUCT* mess
 		return 1000 + (freerdp_is_active_state(context) ? 1 : 0) +
 		       (freerdp_settings_get_bool(context->settings, FreeRDP_UnicodeInput) ? 2 : 0) +
 		       (freerdp_settings_get_bool(context->settings, FreeRDP_SuspendInput) ? 4 : 0);
+	if (message->dwData == 0x46524436)
+	{
+		/* 指针注入：载荷 int32 x、int32 y、uint32 动作位
+		 * 1=移动到 2=左键按下 4=左键抬起 8=右键按下 16=右键抬起 */
+		INT32 args[3] = { 0 };
+		const BOOL suspended = freerdp_settings_get_bool(context->settings, FreeRDP_SuspendInput);
+		BOOL ok = TRUE;
+
+		if (message->cbData != sizeof(args))
+			return 0;
+		memcpy(args, message->lpData, sizeof(args));
+
+		if (!freerdp_settings_set_bool(context->settings, FreeRDP_SuspendInput, FALSE))
+			return 0;
+
+		if (args[2] & 1)
+			ok = freerdp_input_send_mouse_event(context->input, PTR_FLAGS_MOVE, (UINT16)args[0],
+			                                    (UINT16)args[1]);
+		if (ok && (args[2] & 2))
+			ok = freerdp_input_send_mouse_event(context->input, PTR_FLAGS_BUTTON1 | PTR_FLAGS_DOWN,
+			                                    (UINT16)args[0], (UINT16)args[1]);
+		if (ok && (args[2] & 4))
+			ok = freerdp_input_send_mouse_event(context->input, PTR_FLAGS_BUTTON1, (UINT16)args[0],
+			                                    (UINT16)args[1]);
+		if (ok && (args[2] & 8))
+			ok = freerdp_input_send_mouse_event(context->input, PTR_FLAGS_BUTTON2 | PTR_FLAGS_DOWN,
+			                                    (UINT16)args[0], (UINT16)args[1]);
+		if (ok && (args[2] & 16))
+			ok = freerdp_input_send_mouse_event(context->input, PTR_FLAGS_BUTTON2, (UINT16)args[0],
+			                                    (UINT16)args[1]);
+
+		(void)freerdp_settings_set_bool(context->settings, FreeRDP_SuspendInput, suspended);
+		return ok ? 1 : 0;
+	}
 	if (wheel)
 	{
 		/* 载荷是一个 int32 滚轮格数：正数向上，负数向下。 */
