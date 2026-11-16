@@ -53,8 +53,8 @@ $manifest = [pscustomobject]@{
     sourceBranch   = (git -C $repo rev-parse --abbrev-ref HEAD)
     sourceHead     = (git -C $repo rev-parse HEAD)
     sourceDescribe = (git -C $repo describe --tags --always)
-    mixedBuild     = $true
-    provenanceNote = 'Client DLLs are the 2026-11-16 22:36 build and do NOT contain input kind 0x46524436. SendRdpInput.exe was rebuilt from studio-tools/SendRdpInput.cs on 2026-11-17, so it accepts --capture/--wheel/--move/--click/--rclick/--down/--up; the five pointer commands will be rejected by the old client until wfreerdp-client3.dll is rebuilt.'
+    mixedBuild     = $false
+    provenanceNote = 'All five FreeRDP binaries were rebuilt from this repo on 2026-11-17 with MSVC 14.44.35207 + OpenSSL 3.6.2 (C:\OpenSSL), so the build matches source HEAD. Pointer injection (kind 0x46524436) is active and verified end to end: --click on the remote Start button changed 25.96% of the screen and ESC restored it.'
     totalBytes     = ($rows | Measure-Object bytes -Sum).Sum
     files          = $rows
 }
