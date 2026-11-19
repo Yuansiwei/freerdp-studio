@@ -1,31 +1,31 @@
 ﻿{
     "bundle":  "rdpbridge-3.33.1-20261116",
     "kind":  "deployed-runtime",
-    "capturedAt":  "2026-11-17T00:43:43",
+    "capturedAt":  "2026-11-19T00:13:11",
     "capturedFrom":  "C:\\Users\\Studio\\Documents\\deepseek-harness\\default-workspace\\freerdp-studio\\dist\\rdpbridge-3.33.1-20261116",
     "capturedHost":  "STUDIO-WIN",
     "sourceBranch":  "studio-rdp-client",
-    "sourceHead":  "2740a4206322570379b6e75be8b4b94f01b397f6",
-    "sourceDescribe":  "deploy-rdpbridge-20261116-8-g2740a42",
+    "sourceHead":  "d819204b07abad0305be0348c19db4ee34d9cac9",
+    "sourceDescribe":  "deploy-rdpbridge-20261116-10-gd819204",
     "mixedBuild":  false,
-    "provenanceNote":  "All five FreeRDP binaries were rebuilt from this repo on 2026-11-17 with MSVC 14.44.35207 + OpenSSL 3.6.2 (C:\\OpenSSL), so the build matches source HEAD. Pointer injection (kind 0x46524436) is active and verified end to end: --click on the remote Start button changed 25.96% of the screen and ESC restored it.",
-    "totalBytes":  10578815,
+    "provenanceNote":  "All five FreeRDP binaries were rebuilt from this repo with MSVC 14.44.35207 + OpenSSL 3.6.2 (C:\\OpenSSL); wfreerdp-client3.dll last rebuilt 2026-11-19 (all client objects recompiled) for the keepalive fix: 60 s interval, and only text/key/wheel/pointer injections restart the idle countdown (captures and status queries no longer do). Pointer injection (kind 0x46524436) verified end to end on 2026-11-17. The working tree may hold uncommitted changes; sourceHead is the last commit.",
+    "totalBytes":  10580546,
     "files":  [
                   {
                       "name":  "freerdp3.dll",
                       "bytes":  2435072,
                       "fileVersion":  "3,33,0,1",
                       "productVersion":  "3,33,1,0",
-                      "modified":  "2026-11-17 00:39:43",
-                      "sha256":  "C4D5FCD8E639D21B58B4AB2F9D2EA91D160A9794F90CE80A084029C212A0005F"
+                      "modified":  "2026-11-19 00:11:14",
+                      "sha256":  "C3CCEE2CC5E276D980070B99CE1FD0C5A8F0F97FCAE605D1B5A5089826BBA933"
                   },
                   {
                       "name":  "freerdp-client3.dll",
                       "bytes":  703488,
                       "fileVersion":  "3,33,0,1",
                       "productVersion":  "3,33,1,0",
-                      "modified":  "2026-11-17 00:39:55",
-                      "sha256":  "1FAA9E712103853A1F7FA3C615EF82CA941355AAE305E6D8DD765A09B5369A6D"
+                      "modified":  "2026-11-19 00:11:16",
+                      "sha256":  "34DEA84A6C04A6F1D4D557443B25091BD0139E63658FCA706602C0D3674A2B82"
                   },
                   {
                       "name":  "KeepaliveTimerProbe.exe",
@@ -53,51 +53,51 @@
                   },
                   {
                       "name":  "MANIFEST.json",
-                      "bytes":  5292,
+                      "bytes":  5272,
                       "fileVersion":  null,
                       "productVersion":  null,
-                      "modified":  "2026-11-17 00:24:47",
-                      "sha256":  "4FEB10774D751DB7FE5467C5AA87ED087F8BE6A6132C8DB44A58EB8CB367CE46"
+                      "modified":  "2026-11-17 00:43:43",
+                      "sha256":  "605806CD2A2DF93E7F143E709C0A15FF0B017C86BDC9177D26CE85BEC5B3E730"
                   },
                   {
                       "name":  "SendRdpInput.exe",
                       "bytes":  12800,
                       "fileVersion":  "0.0.0.0",
                       "productVersion":  "0.0.0.0",
-                      "modified":  "2026-11-17 00:43:43",
-                      "sha256":  "EE52ECDD58B9357960FC9A6C65BF9942C3C9E441778476DA94D0DF7F16F9E1A8"
+                      "modified":  "2026-11-19 00:13:11",
+                      "sha256":  "2C92A6A28E8952543462C2EE8FEAD03F6FF1B7EEB3D7D625D002E88F5B4F8B6C"
                   },
                   {
                       "name":  "wfreerdp.exe",
                       "bytes":  108032,
                       "fileVersion":  "3,33,0,1",
                       "productVersion":  "3,33,1,0",
-                      "modified":  "2026-11-17 00:39:57",
-                      "sha256":  "BAC5D717C915B21B854B037E918863EE5AF94A6CE03E585A9504D3C837F45F33"
+                      "modified":  "2026-11-19 00:11:16",
+                      "sha256":  "3A22E50250F3FD0251B5ABFE80630F21636892F96A43D06E3CC65989FEE84D80"
                   },
                   {
                       "name":  "wfreerdp-client3.dll",
                       "bytes":  201216,
                       "fileVersion":  "3,33,0,1",
                       "productVersion":  "3,33,1,0",
-                      "modified":  "2026-11-17 00:39:57",
-                      "sha256":  "7604A5C21D7933F20210F500E819A747CB68F4D1C78D781FEF69B17BF852C3C9"
+                      "modified":  "2026-11-19 00:12:11",
+                      "sha256":  "E6BDF19CD1D2311AAE1CBD079ED2ECFC8B4088F1B8F41CE5CF24367A02C9199B"
                   },
                   {
                       "name":  "winpr3.dll",
                       "bytes":  885760,
                       "fileVersion":  "3,33,0,1",
                       "productVersion":  "3,33,1,0",
-                      "modified":  "2026-11-17 00:38:39",
-                      "sha256":  "81FEF167F0886BB15CC215F98F3DF7EC89167B7E147BC6750610EFF211A9AEDC"
+                      "modified":  "2026-11-19 00:11:06",
+                      "sha256":  "7FD26ED059C8BA8C2A639879F2C4290D59E0D28F75DAC5F3859E5F90032E0A6F"
                   },
                   {
                       "name":  "使用说明.md",
-                      "bytes":  18131,
+                      "bytes":  19882,
                       "fileVersion":  null,
                       "productVersion":  null,
-                      "modified":  "2026-11-17 00:15:48",
-                      "sha256":  "4E99699265840A1DCA12A31C499F89EBE503DBFCF3B2952EFCF2154DE145CF61"
+                      "modified":  "2026-11-19 00:10:53",
+                      "sha256":  "3CC34A28DE85E909DC5B587F2DEE151F812D082CB63C2C15CBE73230DC9CDBDD"
                   }
               ]
 }

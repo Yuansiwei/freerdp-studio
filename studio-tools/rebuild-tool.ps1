@@ -54,7 +54,7 @@ $manifest = [pscustomobject]@{
     sourceHead     = (git -C $repo rev-parse HEAD)
     sourceDescribe = (git -C $repo describe --tags --always)
     mixedBuild     = $false
-    provenanceNote = 'All five FreeRDP binaries were rebuilt from this repo on 2026-11-17 with MSVC 14.44.35207 + OpenSSL 3.6.2 (C:\OpenSSL), so the build matches source HEAD. Pointer injection (kind 0x46524436) is active and verified end to end: --click on the remote Start button changed 25.96% of the screen and ESC restored it.'
+    provenanceNote = 'All five FreeRDP binaries were rebuilt from this repo with MSVC 14.44.35207 + OpenSSL 3.6.2 (C:\OpenSSL); wfreerdp-client3.dll last rebuilt 2026-11-19 (all client objects recompiled) for the keepalive fix: 60 s interval, and only text/key/wheel/pointer injections restart the idle countdown (captures and status queries no longer do). Pointer injection (kind 0x46524436) verified end to end on 2026-11-17. The working tree may hold uncommitted changes; sourceHead is the last commit.'
     totalBytes     = ($rows | Measure-Object bytes -Sum).Sum
     files          = $rows
 }
