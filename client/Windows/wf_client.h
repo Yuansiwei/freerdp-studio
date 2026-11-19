@@ -45,8 +45,9 @@
 
 /* Identifies the single window timer that injects the idle keep alive key. */
 #define STUDIO_KEEPALIVE_TIMER 0x53544615
-/* The keep alive key is only sent after this much time without any input. */
-#define STUDIO_KEEPALIVE_IDLE_MS 120000
+/* The keep alive key is only sent after this much time without any input.
+ * 60 s, not 120 s: the remote locked within ~4 min of the last real input (2026-11-18). */
+#define STUDIO_KEEPALIVE_IDLE_MS 60000
 /* One shot timer that announces the initial size and scale once the display channel is up. */
 #define STUDIO_SYNC_TIMER 0x53544501
 #define STUDIO_SYNC_DELAY_MS 1500

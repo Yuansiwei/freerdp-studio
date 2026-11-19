@@ -796,6 +796,15 @@ void wf_send_resize(wfContext* wfc)
 	}
 }
 
+/* Only requests that really send input to the server count as activity: text, keys, wheel and
+ * pointer. A capture or status query sends nothing, so it must not restart the countdown;
+ * otherwise a once-per-second background capture starves the keep alive and the remote locks
+ * (measured 2026-11-18: captures every 30 s for 150 s -> 0 F15 sent). */
+static BOOL studio_keepalive_is_remote_input_kind(ULONG_PTR kind)
+{
+	return kind == 0x46524431 || kind == 0x46524432 || kind == 0x46524434 || kind == 0x46524436;
+}
+
 /* Any input, local or injected, restarts the idle countdown. */
 static void studio_keepalive_touch(wfContext* wfc)
 {
@@ -861,7 +870,7 @@ LRESULT CALLBACK wf_event_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam
 			if (message && message->dwData == 0x46524433)
 				return (LRESULT)(1000 + wfc->studioKeepAliveCount);
 			const LRESULT sent = studio_send_input(&wfc->common.context, message);
-			if (sent == 1)
+			if (sent == 1 && studio_keepalive_is_remote_input_kind(message->dwData))
 				studio_keepalive_touch(wfc);
 			return sent;
 		}

@@ -148,7 +148,7 @@ internal static class SendRdpInput
                 ulong result=ack.ToUInt64();
                 if(wantsKeepalive) {
                     if(result<1000) throw new InvalidOperationException("Keepalive endpoint unavailable.");
-                    Console.WriteLine("IntervalSeconds=120 F15PairsSent="+(result-1000));
+                    Console.WriteLine("IntervalSeconds=60 F15PairsSent="+(result-1000));
                     return 0;
                 }
                 if(wantsStatus) {
