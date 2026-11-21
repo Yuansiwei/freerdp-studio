@@ -2,8 +2,10 @@
 # Clicks the remote Start button, measures the pixel delta, then closes the menu with ESC.
 $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName System.Drawing
-$dist = 'C:\Users\Studio\Documents\deepseek-harness\default-workspace\freerdp-studio\dist\rdpbridge-3.33.1-20261116'
-$tool = Join-Path $dist 'SendRdpInput.exe'
+# The client runs from C:\Studio\RdpBridge (outside the Low-integrity deepseek-harness sandbox);
+# SendRdpInput only targets a client started from its own folder, so use that copy.
+$runtime = 'C:\Studio\RdpBridge'
+$tool = Join-Path $runtime 'SendRdpInput.exe'
 $tgt  = '172.30.251.1:3390'
 $out  = 'C:\Users\Studio\Documents\deepseek-harness\default-workspace\freerdp-diag'
 

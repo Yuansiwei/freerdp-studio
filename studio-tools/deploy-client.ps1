@@ -1,6 +1,12 @@
 # deploy-client.ps1 -- stop the running client, swap in freshly built DLLs, restart it.
 # Keeps a backup in %TEMP%\rdpbridge-backup so a bad build can be rolled back instantly.
 #
+# The client RUNS from C:\Studio\RdpBridge, not from the repo's dist folder: the repo lives under
+# deepseek-harness\default-workspace, which carries a Low integrity label (an agent sandbox).
+# A client started from there runs at Low IL and can no longer write its capture log, BMPs or
+# open the capture pipe, and Medium-IL tools cannot reach it (2026-11-19). dist stays the
+# versioned record and gets the same binaries.
+#
 # No password lives in this file (the repo is public). The restart arguments come from, in order:
 #   1. the command line of the client that is running now (restart exactly as it was started)
 #   2. Windows Credential Manager, GENERIC credential TERMSRV/<host>:<port> or TERMSRV/<host>
@@ -18,6 +24,7 @@ $ErrorActionPreference = 'Continue'
 $repo  = 'C:\Users\Studio\Documents\deepseek-harness\default-workspace\freerdp-studio'
 $build = Join-Path $repo 'build'
 $dist  = Join-Path $repo 'dist\rdpbridge-3.33.1-20261116'
+$runtime = 'C:\Studio\RdpBridge'
 $backup = Join-Path $env:TEMP 'rdpbridge-backup'
 $names = @('wfreerdp.exe', 'wfreerdp-client3.dll', 'freerdp-client3.dll', 'freerdp3.dll', 'winpr3.dll')
 $server = '172.30.251.1:3390'
@@ -93,10 +100,10 @@ if (-not $launch) {
 Write-Output ('  source: ' + $launch.Source)
 if ($CheckOnly) { exit 0 }
 
-Write-Output '=== 1. backup current bundle binaries ==='
-New-Item -ItemType Directory -Force -Path $backup | Out-Null
+Write-Output '=== 1. backup current runtime binaries ==='
+New-Item -ItemType Directory -Force -Path $backup, $runtime | Out-Null
 foreach ($n in $names) {
-    $p = Join-Path $dist $n
+    $p = Join-Path $runtime $n
     if (Test-Path $p) { Copy-Item $p -Destination (Join-Path $backup $n) -Force; Write-Output ('  backed up ' + $n) }
 }
 
@@ -110,27 +117,33 @@ if ($proc) {
     Write-Output '  not running'
 }
 
-Write-Output '=== 3. swap binaries ==='
+Write-Output '=== 3. swap binaries (runtime + dist record) ==='
 foreach ($n in $names) {
     $src = Get-ChildItem $build -Recurse -File -Filter $n -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $src) { Write-Output ('  no build output for ' + $n); continue }
-    $dst = Join-Path $dist $n
-    Copy-Item $src.FullName -Destination $dst -Force
-    $h = (Get-FileHash $dst -Algorithm SHA256).Hash
-    Write-Output ('  {0,-24} {1,10:N0}  {2}' -f $n, (Get-Item $dst).Length, $h.Substring(0, 16))
+    foreach ($dir in @($runtime, $dist)) { Copy-Item $src.FullName -Destination (Join-Path $dir $n) -Force }
+    $h = (Get-FileHash (Join-Path $runtime $n) -Algorithm SHA256).Hash
+    Write-Output ('  {0,-24} {1,10:N0}  {2}' -f $n, (Get-Item (Join-Path $runtime $n)).Length, $h.Substring(0, 16))
+}
+# the rest of the bundle (OpenSSL, SendRdpInput, docs) must sit next to the exe as well
+Get-ChildItem $dist -File | Where-Object { $names -notcontains $_.Name } | ForEach-Object {
+    Copy-Item $_.FullName -Destination (Join-Path $runtime $_.Name) -Force
 }
 
 Write-Output '=== 4. restart client ==='
-$exe = Join-Path $dist 'wfreerdp.exe'
-Start-Process -FilePath $exe -WorkingDirectory $dist -ArgumentList $launch.Args
+$exe = Join-Path $runtime 'wfreerdp.exe'
+Start-Process -FilePath $exe -WorkingDirectory $runtime -ArgumentList $launch.Args
 Start-Sleep -Seconds 6
 $p = Get-Process wfreerdp -ErrorAction SilentlyContinue
 if ($p) {
     Write-Output ('  running pid=' + ($p | Select-Object -First 1).Id)
 } else {
     Write-Output '  FAILED TO START - rolling back'
-    foreach ($n in $names) { Copy-Item (Join-Path $backup $n) -Destination (Join-Path $dist $n) -Force }
-    Start-Process -FilePath $exe -WorkingDirectory $dist -ArgumentList $launch.Args
+    foreach ($n in $names) {
+        $b = Join-Path $backup $n
+        if (Test-Path $b) { foreach ($dir in @($runtime, $dist)) { Copy-Item $b -Destination (Join-Path $dir $n) -Force } }
+    }
+    Start-Process -FilePath $exe -WorkingDirectory $runtime -ArgumentList $launch.Args
     Start-Sleep -Seconds 5
     if (Get-Process wfreerdp -ErrorAction SilentlyContinue) { Write-Output '  rolled back, client running' }
     else { Write-Output '  rollback also failed' }
@@ -138,6 +151,6 @@ if ($p) {
 }
 
 Write-Output '=== 5. status ==='
-$tool = Join-Path $dist 'SendRdpInput.exe'
+$tool = Join-Path $runtime 'SendRdpInput.exe'
 & $tool --target $server --status query
 Write-Output ('  exit=' + $LASTEXITCODE)

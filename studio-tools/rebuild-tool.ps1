@@ -1,8 +1,11 @@
 # Rebuild SendRdpInput.exe from source and deploy it into the frozen bundle.
 # ASCII-only source. Never embeds a CJK filename: the doc is located by wildcard.
+# dist is the versioned record; the client RUNS from C:\Studio\RdpBridge (outside the Low-integrity
+# deepseek-harness sandbox, see deploy-client.ps1), so everything is mirrored there too.
 $ErrorActionPreference = 'Continue'
 $repo = 'C:\Users\Studio\Documents\deepseek-harness\default-workspace\freerdp-studio'
 $dist = Join-Path $repo 'dist\rdpbridge-3.33.1-20261116'
+$runtime = 'C:\Studio\RdpBridge'
 $tools = Join-Path $repo 'studio-tools'
 $cs   = Join-Path $tools 'SendRdpInput.cs'
 $tmp  = Join-Path $env:TEMP 'SendRdpInput.build.exe'
@@ -61,11 +64,19 @@ $manifest = [pscustomobject]@{
 $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $dist 'MANIFEST.json') -Encoding UTF8
 Write-Output ('  files: {0}  total {1:N1} MB' -f @($rows).Count, (($rows | Measure-Object bytes -Sum).Sum / 1MB))
 
-Write-Output '=== 5. client availability ==='
+Write-Output '=== 5. mirror tool, doc and manifest into the runtime folder ==='
+New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+foreach ($f in @((Join-Path $dist 'SendRdpInput.exe'), (Join-Path $dist 'MANIFEST.json')) + @($dstDoc.FullName)) {
+    if ($f -and (Test-Path $f)) { Copy-Item $f -Destination $runtime -Force }
+}
+Write-Output ('  mirrored into ' + $runtime)
+
+Write-Output '=== 6. client availability ==='
 $client = Get-Process wfreerdp -ErrorAction SilentlyContinue
 if ($client) {
     Write-Output ('  client running: pid={0}' -f ($client | Select-Object -First 1).Id)
-    & $target --target 172.30.251.1:3390 --status query
+    # SendRdpInput only talks to a client started from its own folder: use the runtime copy
+    & (Join-Path $runtime 'SendRdpInput.exe') --target 172.30.251.1:3390 --status query
     Write-Output ('  status exit=' + $LASTEXITCODE)
 } else {
     Write-Output '  client NOT running - start it first, then re-run the smoke test'
