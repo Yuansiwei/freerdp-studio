@@ -131,14 +131,19 @@ class GpuEngineTests(unittest.TestCase):
         for gl, cl in zip(g["lines"], c["lines"]):
             self.assertEqual(norm(gl["text"]), norm(cl["text"]))
 
-    def test_repeated_frames_stay_fast(self):
+    def test_repeated_frames_reuse_fixed_shape_sessions(self):
+        # What keeps the GPU fast is that no session ever sees a new input shape (~750 ms each on
+        # this VM). Check that structurally - wall time depends on whatever else loads the machine
+        # (a 1.5 s bound failed while another job was compiling) - and keep only a loose time cap.
         img = half(page(SAMPLE))
         self.gpu.recognize(img, 0.5)
+        rec = self.gpu.engine.text_rec.session
+        before = {b: id(s) for b, s in rec.sessions.items()}
         t = time.perf_counter()
         for _ in range(3):
             self.gpu.recognize(img, 0.5)
-        # a shape change costs ~750 ms per batch; three frames of 4 lines must be far below that
-        self.assertLess((time.perf_counter() - t) / 3, 1.5)
+        self.assertEqual({b: id(s) for b, s in rec.sessions.items()}, before)   # no new sessions
+        self.assertLess((time.perf_counter() - t) / 3, 5.0)
 
     def test_oversized_batches_fall_back_to_cpu(self):  # negative control
         rec = self.gpu.engine.text_rec.session

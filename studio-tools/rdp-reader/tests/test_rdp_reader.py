@@ -207,6 +207,15 @@ class PipeCaptureTests(unittest.TestCase):
         expected = cv2.cvtColor(cv2.resize(self.src, (320, 180), interpolation=cv2.INTER_AREA), cv2.COLOR_BGRA2BGR)
         np.testing.assert_array_equal(frame.bgr, expected)
 
+    def test_auto_scale_targets_width_and_never_upscales(self):
+        c = self.fake().client()
+        f = c.capture("auto", target_width=320)
+        self.assertEqual((f.size, f.scale), ((320, 180), 0.5))
+        f = c.capture("auto")  # 640 wide is already below 1920: keep native
+        self.assertEqual((f.size, f.scale), ((640, 360), 1.0))
+        with self.assertRaises(ValueError):  # negative control
+            c.capture("big")
+
     def test_sequence_numbers_increase(self):
         c = self.fake().client()
         self.assertEqual([c.capture(0.5).seq for _ in range(3)], [1, 2, 3])
@@ -399,6 +408,17 @@ class ReaderLoopTests(unittest.TestCase):
         self.assertIn("2222", ocr[3]["text"])
         self.assertTrue(all(len(l["box"]) == 4 for l in ocr[3]["lines"]))
         self.assertNotIn(2, ocr)  # unchanged frame never reaches OCR (negative control)
+
+
+class ScaleArgTests(unittest.TestCase):
+    def test_scale_defaults_to_auto_and_accepts_factors(self):
+        self.assertEqual(rdp_reader.parse_args([]).scale, "auto")
+        self.assertEqual(rdp_reader.parse_args(["--scale", "0.75"]).scale, 0.75)
+
+    def test_bad_scale_rejected(self):  # negative control
+        for bad in ("x", "0", "1.5"):
+            with self.assertRaises(SystemExit):
+                rdp_reader.parse_args(["--scale", bad])
 
 
 class EngineListTests(unittest.TestCase):

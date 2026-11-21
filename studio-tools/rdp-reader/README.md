@@ -4,7 +4,7 @@
 有变化才送 OCR，结果写成 JSONL 和「最新结果」文件，供脚本或 agent 读取。
 
 ```
-wfreerdp 主画面缓冲 ──命名管道──▶ 降采样(默认 1/2) ──▶ 变化检测 ──▶ PP-OCRv6 small（默认：准，带坐标，GPU）
+wfreerdp 主画面缓冲 ──命名管道──▶ 降采样(约1920宽) ──▶ 变化检测 ──▶ PP-OCRv6 small（默认：准，带坐标，GPU）
    (WM_COPYDATA --capture)          3840×2160→1920×1080      │        [可选] PaddleOCR-VL / Windows OCR
                                                              └──▶ events.jsonl / latest.* / frames/
 ```
@@ -15,7 +15,7 @@ wfreerdp 主画面缓冲 ──命名管道──▶ 降采样(默认 1/2) ─�
   `client/Windows/studio_input.h` 的 `studio_capture_primary()`）。客户端用 `fopen(path, "wb")`
   写 BMP；我们给它的路径是一次性的**命名管道** `\\.\pipe\studio-rdpcap-<pid>-<随机>`，
   于是整帧直接流进本进程内存：**不落盘、不用重编客户端、不打断当前会话**。
-- 原生分辨率的帧只在内存里停留约 20 ms，随即用 `INTER_AREA` 降采样（`--scale`，默认 0.5）。
+- 原生分辨率的帧只在内存里停留约 20 ms，随即用 `INTER_AREA` 降采样（`--scale`，默认 `auto`：缩到约 1920 宽，4K→0.5、2560→0.75，从不放大）。
   之后的变化检测、存档、OCR 全部基于降采样后的帧。
 - 变化检测：480 宽灰度缩略图与「上一次送 OCR 的帧」比较。光标闪烁、转圈图标这类小变化
   不触发 OCR；缓慢累积的变化最终会触发。
@@ -77,7 +77,7 @@ cd C:\Users\Studio\Documents\deepseek-harness\default-workspace\freerdp-studio\s
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `--interval` | 1.0 | 截图间隔（秒） |
-| `--scale` | 0.5 | 截图后立即降采样的倍率（0.05–1.0）。实测 1.0/0.5/0.4 的识别准确度相同，0.33 开始掉字 |
+| `--scale` | auto | 截图后立即降采样：`auto` 缩到约 1920 宽，或给 0.05–1.0 的倍率。实测 1920/1536 宽与原生 4K 一样准，约 1270 宽开始掉中文字（2560 屏减半时核对输入就失败过） |
 | `--engine` | ppocr | 逗号分隔：`ppocr`、`vl`、`win`；`none` 只截图；旧写法 `both` = `win,vl` |
 | `--ppocr-device` | auto | `auto` / `gpu`（不可用就报错）/ `cpu` |
 | `--ppocr-size` | small | `small` / `medium`（medium 没更准，慢 3 倍） |
@@ -88,6 +88,55 @@ cd C:\Users\Studio\Documents\deepseek-harness\default-workspace\freerdp-studio\s
 | `--duration` / `--max-frames` | 0 | 运行时长 / 截图次数上限（0 = 不限） |
 | `--vl-inflight` | 2 | 同时进行的 PaddleOCR-VL 请求数（服务端有 8 个 slot） |
 | `--win-lang` | zh-Hans-CN | 也可 `en-US`、`zh-Hant-TW` |
+
+## 与远端 OpenCode 端到端交互（`rdp_chat.py`）
+
+```powershell
+& $py rdp_chat.py --session "E2E-OK-4821" --text "只回复一行：OK"   # 切到指定会话再发
+& $py rdp_chat.py --new-session --text "..."                         # 新建会话再发
+& $py rdp_chat.py --session "..." --text "..." --dry-run              # 只定位，不点击不输入
+```
+
+流程：OCR 找到空输入框 → 点击 → `SendRdpInput --text` → OCR 确认文字确实进了输入框 → 回车
+→ 边流式输出边读（见下）；画面先变化、再连续 `--settle` 秒（默认 8）不变即视为回复结束
+→ 输出「我们的提问之后、输入框之前」的文字。结果存为 `chat.json` + `final.jpg`。
+
+**边流式边读（默认，长回复不用往上翻）**：OpenCode 输出时视图固定在底部，回复的每一段都会从屏幕上经过。
+
+- 截图线程连续截图，每次间隔 `--poll` 秒（默认 0.02 s，单次截图 12–14 ms，实测 26–28 帧/秒）。
+  每个有变化的帧，只把对话区以 PNG 无损压缩存进队列（约 46 KB/帧，未压缩为 3.5 MB）。
+- 主线程按顺序 OCR 队列（只读对话区，约 0.19 s/帧），拼接出完整回复，并自适应跳帧：
+  - 接得上，下次就跳远一倍（最多 16 帧）；接不上，就退回读中间的帧。
+  - 只有连相邻两帧都接不上，才记为断档。
+- OCR 比输出慢也不会漏，因为每一步都还在队列里；读完的帧马上释放。
+- 拼接的位移必须得到重叠区多数行的认可：只靠「}」这类重复行投出的票不算数。
+- 结果的 `follow` 给出 `snapshots`、`ocr_frames`、`gaps`、`max_queue`、`left_in_queue`、`ocr_ms_median`。
+- 有断档时才退回往上滚（下一段）。`--no-follow` 关闭边读。
+
+安全约束（都有负对照测试）：
+
+- `--session`：先点侧栏，再确认**顶部标题**就是该会话才输入，否则拒绝；不会把消息打进别的对话。
+- 输入框不是空的（可能是用户的草稿）就拒绝输入；输入后看不到自己的文字就**不按回车**。
+- 文字核对用容错比对（OCR 错一两个字仍能确认），完全不同的内容不会被当成一致。
+- 长提问在气泡里折行，折出来的尾巴（如「或指令。」）不会被算进回复。
+
+后备（边读出现断档时）：回复比一屏高、提问被卷出屏幕时，自动往上滚（每次 3 格）逐页 OCR，直到看见提问；
+各页按「相同文字行的位移投票」拼接，不怕悬浮的「↓」按钮和被屏幕边缘切掉的行；
+然后按原路每次 3 格滚回，并**逐字核对回到原画面**（一次性大幅滚动会被 OpenCode 丢掉一部分）。
+结果的 `scrollback` 给出 `pages`、`gaps`（拼接是否断档）、`top_reached`、`restored`；
+回复末尾的「Build · 模型 · 耗时」单独放进 `footer`。`--no-scrollback` 关闭此功能。
+
+实测（2026-11-19，远端 2560×1440，测试会话「端到端連線測試 E2E-OK-4821」）：
+
+| 场景 | 结果 |
+|---|---|
+| 新会话首问 | 回复 `E2E-OK-4821`，约 18 s（含 8 s 静止判定） |
+| 多轮追问（4821×2） | 回复 `9642`，正确且不是上一轮的回复 |
+| 60 项编号清单（超过一屏） | 滚 7 页读全 101–160，无遗漏、无重复，`restored=true`，整轮 29 s |
+| 80 项清单单独回读 | 9 页 13.6 s，80 项齐全 |
+| 旧版边读（截图→OCR→截图串行，约 0.3 s 一帧） | 201–280：拼接有断档，退回滚动（37 s） |
+| 新版边读，90 行清单（`--no-scrollback`） | 401–490 全对，`mode=follow`，0 断档，**完全不滚动**；截 450 帧，50 帧入队，OCR 29 帧，队列最多 5 帧 |
+| 新版边读，150 行清单（`--no-scrollback`） | 501–650 全对，`mode=follow`，0 断档，不滚动；截 706 帧，80 帧入队，OCR 52 帧，队列最多 4 帧；回复结束后 8 s 即完成 |
 
 ## 输出
 
@@ -115,9 +164,12 @@ cd C:\Users\Studio\Documents\deepseek-harness\default-workspace\freerdp-studio\s
 
 ## 注意
 
+- 客户端必须从 `C:\Studio\RdpBridge` 运行（桌面快捷方式已指向那里）。仓库所在的
+  `deepseek-harness\default-workspace` 是 Low 完整性沙箱，从 dist 启动的客户端写不了文件、
+  打不开截图管道，截图会全部失败（返回 0，日志里也没有记录）。
 - 需要 2026-11-19 之后的 `wfreerdp-client3.dll`。旧版把截图也当成输入，每秒截图会让 F15 保活永远不触发，
   远端约 4 分钟就锁屏。新版只认真正的输入（文字、按键、滚轮、指针），保活间隔改为 60 秒。
-- 客户端每截一次会在 `%TEMP%\studio-capture.log` 追加两行（按 1 帧/秒约 13 MB/天），日志不会自动截断。
+- 客户端每截一次会在 `%TEMP%\studio-capture.log` 追加两行（按 1 帧/秒约 13 MB/天；`rdp_chat` 边读时每轮约 700 次截图，约 0.1 MB），日志不会自动截断。
 - 截到的是客户端缓冲：远端锁屏或安全桌面时，截到的是客户端最后收到的画面。
 - 窗口按标题（主机名）匹配，并且只认 `wfreerdp.exe`；同一主机只能开一个客户端实例。
 - GPU 与 llama-server（PaddleOCR-VL）共用显卡。远端改分辨率后的第一帧会慢约 1 s（新的检测尺寸）。
@@ -126,11 +178,20 @@ cd C:\Users\Studio\Documents\deepseek-harness\default-workspace\freerdp-studio\s
 ## 测试
 
 ```powershell
-.\run-tests.ps1     # 44 项，约 11 s（预算 10 分钟）
+.\run-tests.ps1     # 88 项，约 18 s（预算 10 分钟）
 ```
 
 测试内置一个模拟 `wfreerdp` 的隐藏窗口（同样响应 WM_COPYDATA），覆盖管道协议和各种失败路径：
 拒绝、谎报成功、流截断、非 BMP、错误进程、找不到窗口。还覆盖变化检测（含无变化、光标级变化的负对照）、
 PP-OCRv6（CPU/GPU 结果一致、方框为原生坐标、空白帧、GPU 不可用时自动退回 CPU、超宽批次退回 CPU、
 缺模型报错）、Windows OCR、VL 重复输出截断（含正常文本不被误截的负对照）、引擎列表解析和读取循环。
+`rdp_chat` 的测试用模拟屏幕，覆盖：
+- 回滚拼接；
+- 边读：
+  - OCR 慢到每读一帧就有两屏内容流过，仍能从队列补齐；
+  - 自适应跳帧（不跳过接不上的帧）；
+  - 只在相邻帧接不上时才记断档（负对照）；
+  - 截图线程出错会抛出（负对照）；
+  - 重复行不能单独完成拼接（负对照）；
+  - PNG 快照无损。
 有真实客户端窗口、8080 服务在线或 GPU 可用时，会自动加跑对应的测试。

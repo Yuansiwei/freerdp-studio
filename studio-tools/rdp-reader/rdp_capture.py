@@ -38,9 +38,14 @@ WAIT_OBJECT_0 = 0
 WAIT_TIMEOUT = 0x102
 ERROR_IO_PENDING = 997
 ERROR_PIPE_CONNECTED = 535
+ERROR_NO_DATA = 232
 ERROR_BROKEN_PIPE = 109
 ERROR_OPERATION_ABORTED = 995
 PIPE_BUFFER = 4 << 20
+# Downsampled frames aim for this width. Measured (PP-OCRv6 small): 1920/1536 wide read as well
+# as native 4K, ~1270 wide starts dropping CJK characters (a 2560 session halved = 1280 failed
+# to verify typed Chinese text on 2026-11-19).
+TARGET_WIDTH = 1920
 BMP_HEADER = 54
 INVALID_HANDLE = ctypes.c_void_p(-1).value
 
@@ -242,7 +247,9 @@ class _PipeReader(threading.Thread):
                     _, err = self._wait(ov, [self.abort_event, self.client_done])
                     if err:
                         raise CaptureError(f"ConnectNamedPipe failed, Win32={err}")
-                elif err != ERROR_PIPE_CONNECTED:
+                elif err not in (ERROR_PIPE_CONNECTED, ERROR_NO_DATA):
+                    # ERROR_NO_DATA: the client already opened, wrote and closed the pipe before this
+                    # thread got to ConnectNamedPipe (seen under heavy load); its data is still buffered.
                     raise CaptureError(f"ConnectNamedPipe failed, Win32={err}")
             header = ctypes.create_string_buffer(BMP_HEADER)
             self._read_into(ctypes.addressof(header), BMP_HEADER)
@@ -307,9 +314,11 @@ class RdpClient:
         bits = r - 1000
         return {"connected": bool(bits & 1), "unicode": bool(bits & 2), "input_suspended": bool(bits & 4)}
 
-    def capture(self, scale: float = 0.5) -> Frame:
-        if not 0.05 <= scale <= 1.0:
-            raise ValueError("scale must be within 0.05..1.0")
+    def capture(self, scale="auto", target_width: int = TARGET_WIDTH) -> Frame:
+        """scale: a factor in 0.05..1.0, or "auto" = shrink to about `target_width` pixels wide
+        (3840 -> 0.5, 2560 -> 0.75, <= target -> 1.0; never upscales)."""
+        if scale != "auto" and not (isinstance(scale, (int, float)) and 0.05 <= scale <= 1.0):
+            raise ValueError('scale must be "auto" or within 0.05..1.0')
         name = rf"\\.\pipe\studio-rdpcap-{os.getpid()}-{secrets.token_hex(8)}"
         reader = _PipeReader(name, self.io_timeout_ms)
         reader.start()
@@ -330,6 +339,8 @@ class RdpClient:
             raise CaptureError(str(reader.error)) from reader.error
         capture_ms = (time.perf_counter() - t0) * 1000
         t1 = time.perf_counter()
+        if scale == "auto":
+            scale = min(1.0, target_width / reader.width)
         bgr = downsample(reader.pixels, scale)
         resize_ms = (time.perf_counter() - t1) * 1000
         self._seq += 1

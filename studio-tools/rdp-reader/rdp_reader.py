@@ -532,8 +532,9 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--target", default="172.30.251.1:3390", help="HOST:PORT of the running wfreerdp session")
     p.add_argument("--interval", type=float, default=1.0, help="seconds between captures (default 1)")
-    p.add_argument("--scale", type=float, default=0.5,
-                   help="downsample factor applied right after capture (default 0.5: 3840x2160 -> 1920x1080)")
+    p.add_argument("--scale", default="auto",
+                   help="downsample right after capture: 'auto' (default) shrinks to ~1920 wide "
+                        "(3840 -> 0.5, 2560 -> 0.75), or a factor in 0.05..1.0")
     p.add_argument("--engine", default="ppocr",
                    help="comma list of ppocr, win, vl (or none). Default ppocr. Example: ppocr,vl")
     p.add_argument("--ppocr-device", choices=["auto", "gpu", "cpu"], default="auto",
@@ -561,8 +562,13 @@ def parse_args(argv=None):
     args = p.parse_args(argv)
     if args.interval <= 0:
         p.error("--interval must be > 0")
-    if not 0.05 <= args.scale <= 1.0:
-        p.error("--scale must be within 0.05..1.0")
+    if args.scale != "auto":
+        try:
+            args.scale = float(args.scale)
+        except ValueError:
+            p.error("--scale must be 'auto' or a number")
+        if not 0.05 <= args.scale <= 1.0:
+            p.error("--scale must be within 0.05..1.0")
     try:
         args.engines = engine_list(args.engine)
     except ValueError as exc:
