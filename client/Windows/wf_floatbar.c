@@ -102,6 +102,15 @@ struct s_FloatBar
 	HDC hdcmem;
 	RECT textRect;
 	UINT_PTR animating;
+	/* Where the user left the bar. Every resize, display change and fullscreen toggle used to
+	 * re-centre it (dropping the bar itself re-binds the session to its display, which resizes),
+	 * so a bar dragged sideways jumped back on release. Kept as twice the bar centre in parts per
+	 * million of the parent width (exact on the same display: 1/10000 lost a pixel), so it also
+	 * survives a move to a display of another size. */
+	BOOL placed;
+	LONG center2_ppm;
+	/* A width the user dragged, at 100% scale; 0 = the default width. */
+	LONG user_width100;
 };
 
 /* Scale a layout constant designed at 100% to the current session scale. */
@@ -524,6 +533,21 @@ static BOOL floatbar_resize(wfFloatBar* floatbar, LONG left, LONG width)
 	return TRUE;
 }
 
+/* Remember the position (and width) the user just dragged the bar to. */
+static void floatbar_remember_placement(wfFloatBar* floatbar)
+{
+	const LONG parentWidth = floatbar_parent_width(floatbar);
+
+	if (!floatbar || (parentWidth <= 0) || (floatbar->zoom < 100))
+		return;
+
+	floatbar->center2_ppm = (LONG)((((LONGLONG)floatbar->rect.left * 2 + floatbar->width) * 1000000 +
+	                                parentWidth / 2) /
+	                               parentWidth);
+	floatbar->user_width100 = (LONG)(((LONGLONG)floatbar->width * 100) / floatbar->zoom);
+	floatbar->placed = TRUE;
+}
+
 static int floatbar_get_resize_mode(const wfFloatBar* const floatbar, const int x, const int y)
 {
 	if (!floatbar || (y < 0) || (y > floatbar->height))
@@ -737,8 +761,8 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			return TRUE;
 
 		case WM_LBUTTONDOWN:
-			pos_x = LOWORD(lParam);
-			pos_y = HIWORD(lParam);
+			pos_x = (short)LOWORD(lParam); /* signed: negative once the captured pointer leaves the bar */
+			pos_y = (short)HIWORD(lParam);
 			button = floatbar_get_button(floatbar, pos_x, pos_y);
 
 			if (!button)
@@ -767,13 +791,16 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			break;
 
 		case WM_LBUTTONUP:
-			pos_x = LOWORD(lParam);
-			pos_y = HIWORD(lParam);
+			pos_x = (short)LOWORD(lParam); /* signed: negative once the captured pointer leaves the bar */
+			pos_y = (short)HIWORD(lParam);
 			const BOOL was_dragging = drag_mode != DRAG_NONE;
 			drag_mode = DRAG_NONE;
 			ReleaseCapture();
 			if (was_dragging)
 			{
+				/* Remember the spot first: the re-bind below resizes, and resizing re-places
+				 * the bar. */
+				floatbar_remember_placement(floatbar);
 				/* Dropping the bar re-binds the session to the display it now covers. */
 				if (floatbar->wfc->fullscreen)
 					wf_snap_to_monitor(floatbar->wfc);
@@ -793,8 +820,8 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			break;
 
 		case WM_LBUTTONDBLCLK:
-			pos_x = LOWORD(lParam);
-			pos_y = HIWORD(lParam);
+			pos_x = (short)LOWORD(lParam); /* signed: negative once the captured pointer leaves the bar */
+			pos_y = (short)HIWORD(lParam);
 
 			if (!floatbar_get_button(floatbar, pos_x, pos_y) && floatbar->wfc->fullscreen_toggle &&
 			    floatbar->wfc->fullscreen)
@@ -802,8 +829,8 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 			break;
 
 		case WM_MOUSEMOVE:
-			pos_x = LOWORD(lParam);
-			pos_y = HIWORD(lParam);
+			pos_x = (short)LOWORD(lParam); /* signed: negative once the captured pointer leaves the bar */
+			pos_y = (short)HIWORD(lParam);
 
 			if (!floatbar->locked)
 				floatbar_animation(floatbar, TRUE);
@@ -885,7 +912,11 @@ static RECT drag_start_window = WINPR_C_ARRAY_INIT;
 
 		case WM_CAPTURECHANGED:
 			if (drag_mode != DRAG_NONE)
+			{
+				/* Capture lost mid-drag (Alt+Tab, another window): keep where it got to. */
+				floatbar_remember_placement(floatbar);
 				floatbar_trigger_hide(floatbar);
+			}
 
 			drag_mode = DRAG_NONE;
 			break;
@@ -1110,7 +1141,8 @@ BOOL wf_floatbar_toggle_fullscreen(wfFloatBar* floatbar, BOOL fullscreen)
 	return TRUE;
 }
 
-/* Re-apply a new session scale: resize the bar, its controls and centre it again. */
+/* Re-apply a new session scale: resize the bar and its controls, then place it again (where the
+ * user left it, or centred). */
 BOOL wf_floatbar_set_scale(wfFloatBar* floatbar, UINT32 zoom)
 {
 	if (!floatbar || (zoom < 100))
@@ -1119,7 +1151,9 @@ BOOL wf_floatbar_set_scale(wfFloatBar* floatbar, UINT32 zoom)
 	if (floatbar->zoom != zoom)
 	{
 		floatbar->zoom = zoom;
-		floatbar->width = floatbar_scale(floatbar, BACKGROUND_W);
+		floatbar->width = floatbar_scale(floatbar, floatbar->user_width100 > 0
+		                                               ? (int)floatbar->user_width100
+		                                               : BACKGROUND_W);
 		floatbar->height = floatbar_scale(floatbar, BACKGROUND_H);
 
 		if (!floatbar_update_layout(floatbar))
@@ -1143,7 +1177,19 @@ BOOL wf_floatbar_reset_position(wfFloatBar* floatbar)
 	if (!GetWindowRect(floatbar->parent, &rect))
 		return FALSE;
 
-	floatbar->rect.left = ((rect.right - rect.left) - floatbar->width) / 2;
+	const LONG parentWidth = rect.right - rect.left;
+
+	if (floatbar->placed)
+	{
+		/* 2*left + width, rounded: exact while the parent width is the one it was stored with */
+		const LONGLONG twice = ((LONGLONG)floatbar->center2_ppm * parentWidth + 500000) / 1000000;
+		floatbar->rect.left = (LONG)((twice - floatbar->width) / 2);
+	}
+	else
+		floatbar->rect.left = (parentWidth - floatbar->width) / 2;
+
+	if (floatbar->rect.left > parentWidth - floatbar->width)
+		floatbar->rect.left = parentWidth - floatbar->width;
 	if (floatbar->rect.left < 0)
 		floatbar->rect.left = 0;
 
